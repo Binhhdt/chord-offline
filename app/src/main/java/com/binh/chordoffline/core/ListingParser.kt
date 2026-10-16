@@ -16,6 +16,8 @@ data class ListingPage(
     val method: String,
     /** Số link bài bị loại vì nằm ở cột bên (Bài hát hot/Thịnh hành), menu, chân trang. */
     val excluded: Int,
+    /** Tổng số trang của danh sách đọc từ thanh phân trang (ví dụ 599); null nếu không thấy. */
+    val lastPage: Int? = null,
 )
 
 /**
@@ -51,6 +53,13 @@ object ListingPolicy {
     }
 
     fun listKey(url: String): String = pageKey(url).substringBefore('#')
+
+    /** URL trang thứ [index] (đánh số từ 0) của cùng danh sách, theo dạng website dùng: ".../nhac-tre?page=N". */
+    fun withPage(url: String, index: Int): String {
+        val u = URI(BatchQueue.normalizeUrl(url))
+        val path = (u.rawPath ?: "").removeSuffix(".html")
+        return "https://${u.host?.lowercase()?.removePrefix("www.")}$path" + if (index > 0) "?page=$index" else ""
+    }
 }
 
 object ListingParser {
@@ -76,6 +85,8 @@ object ListingParser {
         val main = doc.allElements.firstOrNull { it.hasClass("lg:col-span-8") }
         val scope = main ?: doc.body() ?: doc
         val allSongLinks = doc.select("a[href*=/chord/song/]")
+        val hrefs = doc.select("a[href]").map { it.attr("abs:href") }
+        val lastPage = lastPage(hrefs, pageUrl)
 
         val seen = linkedMapOf<String, FoundSong>()
         for (a in scope.select("a[href*=/chord/song/]")) {
@@ -95,21 +106,35 @@ object ListingParser {
         }
         return ListingPage(
             songs = seen.values.toList(),
-            nextUrl = nextPage(doc.select("a[href]").map { it.attr("abs:href") }, pageUrl),
+            nextUrl = nextPage(hrefs, pageUrl, lastPage),
             method = if (main != null) "main" else "fallback",
             excluded = allSongLinks.size - scope.select("a[href*=/chord/song/]").count { !inExcluded(it) },
+            lastPage = lastPage,
         )
     }
 
-    /** Trang kế tiếp = link phân trang của CÙNG danh sách có page = trang hiện tại + 1. */
-    fun nextPage(hrefs: List<String>, pageUrl: String): String? {
+    private fun sameListPageLinks(hrefs: List<String>, pageUrl: String): Sequence<String> {
         val list = ListingPolicy.listKey(pageUrl)
-        val want = ListingPolicy.pageIndex(pageUrl) + 1
         return hrefs.asSequence()
             .filter { it.contains("page=") }
             .filter { runCatching { ListingPolicy.listKey(it) == list }.getOrDefault(false) }
-            .firstOrNull { ListingPolicy.pageIndex(it) == want }
-            ?.let { BatchQueue.normalizeUrl(it) }
+    }
+
+    /** Tổng số trang = số trang lớn nhất trong thanh phân trang của cùng danh sách (page đánh số từ 0 → +1). */
+    fun lastPage(hrefs: List<String>, pageUrl: String): Int? =
+        sameListPageLinks(hrefs, pageUrl).map { ListingPolicy.pageIndex(it) }.maxOrNull()
+            ?.let { maxOf(it, ListingPolicy.pageIndex(pageUrl)) + 1 }
+
+    /**
+     * Trang kế tiếp = link phân trang của CÙNG danh sách có page = trang hiện tại + 1.
+     * Nếu thanh phân trang không có link đó nhưng cho biết còn trang phía sau (lastPage), tự tạo URL trang kế
+     * theo đúng mẫu "?page=N" của website. Đang ở trang cuối -> null (hết trang).
+     */
+    fun nextPage(hrefs: List<String>, pageUrl: String, lastPage: Int? = null): String? {
+        val want = ListingPolicy.pageIndex(pageUrl) + 1
+        sameListPageLinks(hrefs, pageUrl).firstOrNull { ListingPolicy.pageIndex(it) == want }
+            ?.let { return BatchQueue.normalizeUrl(it) }
+        return if (lastPage != null && want < lastPage) ListingPolicy.withPage(pageUrl, want) else null
     }
 }
 
@@ -123,6 +148,10 @@ class Discovery(val maxPages: Int, val maxSongs: Int = 600) {
     val pages: Int get() = visited.size
     val found: List<FoundSong> get() = songs.values.toList()
     var stopReason: String? = null; private set
+    /** true khi đã quét tới trang cuối của danh sách. */
+    var reachedEnd: Boolean = false; private set
+    /** Trang để "Quét tiếp" khi dừng vì đủ giới hạn số trang/số bài; null nếu hết trang hoặc dừng vì lý do khác. */
+    var resumeUrl: String? = null; private set
 
     fun alreadyVisited(url: String) = ListingPolicy.pageKey(url) in visited
 
@@ -139,12 +168,14 @@ class Discovery(val maxPages: Int, val maxSongs: Int = 600) {
 
     /** Có nên tải tiếp trang [next] không; nếu không thì ghi lý do vào [stopReason]. */
     fun shouldContinue(next: String?, lastAdded: Int): Boolean {
+        reachedEnd = next == null
+        resumeUrl = null
         stopReason = when {
-            next == null -> "Hết trang (không có link trang kế tiếp)."
+            next == null -> "Đã tới trang cuối — hết trang."
             lastAdded == 0 -> "Trang vừa quét không có bài mới — dừng để tránh lặp."
             alreadyVisited(next) -> "Trang kế tiếp đã quét rồi — dừng để tránh vòng lặp."
-            pages >= maxPages -> "Đã đủ $maxPages trang theo giới hạn đã chọn."
-            songs.size >= maxSongs -> "Đã đủ $maxSongs bài (giới hạn mỗi lần quét)."
+            pages >= maxPages -> { resumeUrl = next; "Đã đủ $maxPages trang theo giới hạn đã chọn." }
+            songs.size >= maxSongs -> { resumeUrl = next; "Đã đủ $maxSongs bài (giới hạn mỗi lần quét)." }
             else -> null
         }
         return stopReason == null

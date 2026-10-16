@@ -70,8 +70,16 @@ data class DiscoverUi(
     val items: List<FoundItem> = emptyList(),
     val message: String? = null,
     val isError: Boolean = false,
+    /** Trang để "Quét tiếp" (null nếu chưa quét, hết trang hoặc dừng vì lỗi/lặp). */
+    val resumeUrl: String? = null,
+    /** Đã quét tới trang cuối của danh sách. */
+    val reachedEnd: Boolean = false,
+    /** Số trang cuối cùng đã quét (1-based) và tổng số trang đọc từ thanh phân trang. */
+    val lastScanned: Int = 0,
+    val totalPages: Int? = null,
 ) {
     val selectedCount: Int get() = items.count { it.selected }
+    val resumePage: Int? get() = resumeUrl?.let { ListingPolicy.pageIndex(it) + 1 }
 }
 
 /** Trạng thái phần "Thư mục lưu file". */
@@ -435,7 +443,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Chỉ lấy link; KHÔNG tải bài cho tới khi người dùng xác nhận.
     // =====================================================================
 
-    fun setDiscoverUrl(v: String) = _discover.update { it.copy(url = v) }
+    /** Đổi URL thì quên điểm "Quét tiếp" của danh sách cũ. */
+    fun setDiscoverUrl(v: String) = _discover.update { it.copy(url = v, resumeUrl = null, reachedEnd = false, lastScanned = 0, totalPages = null) }
+    private var discoverNext: String? = null
     fun setDiscoverPages(n: Int) = _discover.update { it.copy(maxPages = n.coerceIn(1, ListingPolicy.MAX_PAGES_LIMIT)) }
 
     fun discoverStart() {
@@ -444,13 +454,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ListingPolicy.validate(d.url)?.let { why -> _discover.update { it.copy(message = why, isError = true) }; return }
         if (_batch.value.running) { _discover.update { it.copy(message = "Hàng đợi đang tải — hãy tạm dừng trước khi quét.", isError = true) }; return }
         if (_check.value.loading) { _discover.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.", isError = true) }; return }
-        _discover.update { it.copy(running = true, log = emptyList(), items = emptyList(), message = null, isError = false) }
+        _discover.update { it.copy(running = true, log = emptyList(), items = emptyList(), message = null, isError = false,
+            resumeUrl = null, reachedEnd = false, lastScanned = 0, totalPages = null) }
         discoverJob = viewModelScope.launch { runDiscover(BatchQueue.normalizeUrl(d.url.trim()), d.maxPages) }
+    }
+
+    /**
+     * Quét tiếp [DiscoverUi.maxPages] trang từ chỗ đã dừng (giữ danh sách xem trước & nhật ký cũ).
+     * Bài đã lưu/đã trong hàng đợi vẫn được bỏ chọn sẵn.
+     */
+    fun discoverContinue() {
+        val d = _discover.value
+        val from = d.resumeUrl ?: return
+        if (d.running) return
+        if (_batch.value.running) { _discover.update { it.copy(message = "Hàng đợi đang tải — hãy tạm dừng trước khi quét.", isError = true) }; return }
+        if (_check.value.loading) { _discover.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.", isError = true) }; return }
+        val startPage = ListingPolicy.pageIndex(from) + 1
+        _discover.update { it.copy(running = true, message = null, isError = false, resumeUrl = null,
+            log = it.log + "— Quét tiếp ${it.maxPages} trang từ trang $startPage —") }
+        discoverJob = viewModelScope.launch { runDiscover(from, d.maxPages) }
     }
 
     fun discoverStop() {
         discoverJob?.cancel(); discoverJob = null
-        _discover.update { it.copy(running = false, waitSeconds = 0, currentPage = null,
+        _discover.update { it.copy(running = false, waitSeconds = 0, currentPage = null, resumeUrl = discoverNext,
             message = "Đã dừng quét. Danh sách tìm được đến lúc dừng vẫn được giữ.", isError = false) }
     }
 
@@ -474,6 +501,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             while (true) {
                 val cur = url ?: break
+                discoverNext = cur
                 waitForSlot { s -> _discover.update { it.copy(waitSeconds = s, currentPage = null) } }
                 val path = UrlPolicy.path(cur)
                 if (robots?.isAllowed(path) == false) { finalMsg = "robots.txt không cho phép $path — dừng."; isError = true; break }
@@ -491,18 +519,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val page = onBigStack("listing-parse") { ListingParser.parse(f.body, f.finalUrl ?: cur) }
                 val added = d.add(cur, page)
-                val logLine = "Trang $pageNo: ${page.songs.size} bài (${added} mới) · HTTP ${f.status} · ${f.elapsedMs} ms" +
+                val total = page.lastPage
+                val logLine = "Trang $pageNo${total?.let { "/$it" } ?: ""}: ${page.songs.size} bài (${added} mới) · HTTP ${f.status} · ${f.elapsedMs} ms" +
                     (if (page.method == "fallback") " · ⚠ không thấy cột chính, đã loại cột bên/menu" else "") +
                     (if (page.excluded > 0) " · bỏ ${page.excluded} link ngoài danh sách chính" else "")
                 val found = d.found
                 val items = withContext(Dispatchers.IO) { found.map { toFoundItem(it) } }
-                _discover.update { it.copy(log = it.log + logLine, items = mergeSelection(it.items, items)) }
+                discoverNext = page.nextUrl
+                _discover.update { it.copy(log = it.log + logLine, items = mergeSelection(it.items, items),
+                    lastScanned = pageNo, totalPages = total ?: it.totalPages) }
                 if (d.pages == 1 && page.songs.isEmpty()) {
                     finalMsg = "Không tìm thấy link bài hát nào trên trang này. Có thể đây không phải trang danh sách bài hát, " +
                         "hoặc cấu trúc trang đã thay đổi."
                     isError = true; break
                 }
-                if (!d.shouldContinue(page.nextUrl, added)) { finalMsg = d.stopReason; break }
+                if (!d.shouldContinue(page.nextUrl, added)) {
+                    finalMsg = if (d.reachedEnd) "✅ Đã tới trang cuối (trang $pageNo${total?.let { "/$it" } ?: ""}) — hết trang, không còn gì để quét tiếp."
+                        else d.stopReason
+                    _discover.update { it.copy(resumeUrl = d.resumeUrl, reachedEnd = d.reachedEnd) }
+                    break
+                }
                 url = page.nextUrl
             }
         } catch (e: CancellationException) {
@@ -513,7 +549,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _discover.update {
                 if (!it.running) it   // đã dừng bằng nút Dừng quét
                 else it.copy(running = false, waitSeconds = 0, currentPage = null, isError = isError,
-                    message = listOfNotNull(finalMsg, "Tìm thấy ${it.items.size} bài trong ${d.pages} trang.").joinToString(" "))
+                    // dừng vì lỗi/bị chặn giữa chừng: cho phép thử quét tiếp từ trang chưa tải được
+                    resumeUrl = it.resumeUrl ?: if (isError && !it.reachedEnd) discoverNext else null,
+                    message = listOfNotNull(finalMsg, "Lần này: ${d.pages} trang, ${d.found.size} bài · tổng xem trước ${it.items.size} bài.").joinToString(" "))
             }
         }
     }
@@ -525,10 +563,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return FoundItem(s, selected = !saved && !queued, alreadySaved = saved, inQueue = queued)
     }
 
-    /** Giữ lựa chọn người dùng đã sửa cho các bài đã hiển thị từ trang trước. */
+    /** Giữ nguyên các bài đã hiển thị (và lựa chọn người dùng đã sửa), nối thêm bài mới vào cuối. */
     private fun mergeSelection(old: List<FoundItem>, new: List<FoundItem>): List<FoundItem> {
-        val prev = old.associateBy { it.song.url }
-        return new.map { n -> prev[n.song.url]?.let { n.copy(selected = it.selected) } ?: n }
+        val have = old.mapTo(HashSet()) { BatchQueue.dedupeKey(it.song.url) }
+        return old + new.filter { have.add(BatchQueue.dedupeKey(it.song.url)) }
     }
 
     fun discoverToggle(url: String) = _discover.update { d ->

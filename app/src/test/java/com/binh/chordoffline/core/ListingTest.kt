@@ -111,6 +111,7 @@ class ListingTest {
         assertEquals(0, d.add(u1, r1))
         assertFalse(d.shouldContinue(r1.nextUrl, 0))
         assertTrue(d.stopReason!!.contains("không có bài mới"))
+        assertNull("dừng vì lặp thì không cho quét tiếp", d.resumeUrl)
 
         // trang kế tiếp trỏ về trang đã quét -> dừng (vòng lặp)
         val d2 = Discovery(maxPages = 10)
@@ -123,6 +124,8 @@ class ListingTest {
         d3.add(u0, r0)
         assertFalse(d3.shouldContinue(r0.nextUrl, 2))
         assertTrue(d3.stopReason!!.contains("1 trang"))
+        assertEquals("đủ số trang -> nhớ trang kế để Quét tiếp", r0.nextUrl, d3.resumeUrl)
+        assertFalse(d3.reachedEnd)
 
         // giới hạn số bài
         val d4 = Discovery(maxPages = 5, maxSongs = 1)
@@ -130,7 +133,10 @@ class ListingTest {
         assertFalse(d4.shouldContinue(r0.nextUrl, 1))
 
         // hết trang
-        assertFalse(Discovery(3).shouldContinue(null, 5))
+        val d5 = Discovery(3)
+        assertFalse(d5.shouldContinue(null, 5))
+        assertTrue(d5.reachedEnd); assertNull(d5.resumeUrl)
+        assertTrue(d5.stopReason!!.contains("hết trang"))
     }
 
     @Test fun songUrlNormalization() {
@@ -138,5 +144,35 @@ class ListingTest {
         assertEquals("https://hopamviet.vn/chord/song/a/B1.html", ListingParser.songUrl("http://www.hopamviet.vn/chord/song/a/B1.html", "https://hopamviet.vn/"))
         assertNull(ListingParser.songUrl("/chord/song/a", "https://hopamviet.vn/"))
         assertNull(ListingParser.songUrl("/chord/printsong/a/B1.html", "https://hopamviet.vn/"))
+    }
+
+    // Thanh phân trang thật: 1, 2, 3, …, 599, › (trang cuối = ?page=598)
+    private fun pager(cur: Int, vararg pages: Int) = """<div class="lg:col-span-8">${card("b$cur", "S$cur", "Bài $cur", "X")}
+        <nav aria-label="pagination">${pages.joinToString("") { """<a href="https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=$it">${it + 1}</a>""" }}
+        <a href="https://hopamviet.vn/chord/category/2/nhac-tru-tinh">1</a></nav></div>"""
+
+    @Test fun lastPageReadFromPagination() {
+        val r = ListingParser.parse(pager(0, 1, 2, 598), "https://hopamviet.vn/chord/category/2/nhac-tru-tinh.html")
+        assertEquals(599, r.lastPage)
+        assertEquals("https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=1", r.nextUrl)
+    }
+
+    @Test fun nextPageBuiltWhenPaginatorSkipsNeighbour() {
+        // đang ở trang 21 (page=20), thanh phân trang chỉ có 1 … 599 -> tự tạo ?page=21
+        val r = ListingParser.parse(pager(20, 0, 598), "https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=20")
+        assertEquals("https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=21", r.nextUrl)
+    }
+
+    @Test fun lastPageHasNoNext() {
+        val r = ListingParser.parse(pager(598, 0, 596, 597), "https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=598")
+        assertEquals(599, r.lastPage)
+        assertNull("trang 599/599 -> hết trang", r.nextUrl)
+    }
+
+    @Test fun withPageUsesSiteFormat() {
+        assertEquals("https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=20",
+            ListingPolicy.withPage("http://www.hopamviet.vn/chord/category/2/nhac-tru-tinh.html", 20))
+        assertEquals("https://hopamviet.vn/chord/category/2/nhac-tru-tinh",
+            ListingPolicy.withPage("https://hopamviet.vn/chord/category/2/nhac-tru-tinh?page=5", 0))
     }
 }

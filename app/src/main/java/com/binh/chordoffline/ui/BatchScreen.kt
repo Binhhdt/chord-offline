@@ -123,6 +123,17 @@ private fun LazyListScope.discoverSection(vm: AppViewModel, d: DiscoverUi, batch
                 Button(onClick = vm::discoverStart, enabled = !d.running && !batchRunning) { Text("Quét danh sách") }
                 OutlinedButton(onClick = vm::discoverStop, enabled = d.running) { Text("Dừng quét") }
             }
+            if (d.lastScanned > 0) Text("Đã quét tới trang ${d.lastScanned}${d.totalPages?.let { "/$it" } ?: ""}",
+                style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+            val resume = d.resumePage
+            if (resume != null && !d.running) {
+                Button(onClick = vm::discoverContinue, enabled = !batchRunning, modifier = Modifier.fillMaxWidth()) {
+                    val end = d.totalPages?.let { minOf(it, resume + d.maxPages - 1) } ?: (resume + d.maxPages - 1)
+                    Text("Quét tiếp ${d.maxPages} trang (trang $resume–$end${d.totalPages?.let { "/$it" } ?: ""})")
+                }
+            }
+            if (d.reachedEnd && !d.running) Text("✅ Đã tới trang cuối — hết trang.", color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold)
             if (d.running) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 Text(d.currentPage?.let { "Đang tải trang: $it" } ?: "Nghỉ giữa các request… còn ${d.waitSeconds} giây",

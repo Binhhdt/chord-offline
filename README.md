@@ -197,6 +197,16 @@ Nếu không tìm thấy cột chính, app chuyển sang chế độ dự phòng
 4. App **chỉ lấy link, chưa tải bài nào**. Phần **xem trước** liệt kê tên bài và ca sĩ, đánh dấu bài "✓ đã lưu" hoặc "trong hàng đợi"; các bài này được bỏ chọn sẵn. Có các nút **Chọn tất cả**, **Bỏ chọn** và **Chỉ bài chưa lưu**; chạm vào từng bài để chọn hoặc bỏ chọn.
 5. Bấm **Xác nhận & tải N bài**. App thêm các bài đã chọn vào hàng đợi (bỏ link trùng) và bắt đầu tải.
 
+### Quét tiếp & báo hết trang (v0.4.1)
+- Mỗi lần quét được tối đa 20 trang. Khi dừng vì **đủ số trang**, app nhớ trang kế tiếp và hiện nút **"Quét tiếp 20 trang (trang 21–40/599)"**. Bấm nút để quét đợt sau mà không cần sửa URL.
+- Danh sách xem trước và nhật ký của đợt trước **được giữ lại**, bài mới được nối thêm vào cuối. Bài đã lưu hoặc đã có trong hàng đợi vẫn được bỏ chọn sẵn.
+- **Tổng số trang** được đọc từ thanh phân trang (ví dụ 599), nên nhật ký hiện dạng `Trang 21/599`.
+- Nếu thanh phân trang không có link trực tiếp sang trang kế (ví dụ chỉ hiện `1 … 599`) nhưng vẫn còn trang phía sau, app tự tạo link `?page=N` theo đúng mẫu URL của website.
+- Khi tới trang cuối, app báo **"✅ Đã tới trang cuối — hết trang"** và ẩn nút Quét tiếp.
+- Nếu bấm **Dừng quét**, hoặc bị lỗi mạng hay bị website chặn giữa chừng, nút Quét tiếp sẽ bắt đầu lại từ đúng trang chưa quét xong.
+- Đổi URL thì app quên điểm quét tiếp của danh sách cũ.
+- Muốn bắt đầu từ một trang bất kỳ, vẫn có thể nhập URL dạng `…?page=20` (tức trang 21, vì số trang đếm từ 0).
+
 ### Giới hạn phạm vi và chống vòng lặp
 App dừng quét khi gặp **một trong các trường hợp** sau, và ghi lý do vào nhật ký:
 - đủ số trang đã chọn (tối đa 20 trang);
