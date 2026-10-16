@@ -33,10 +33,34 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         prefs.edit().putString("tree", uri.toString()).apply()
     }
 
+    /**
+     * Thư mục chứa các bài. Chấp nhận cả khi người dùng chọn:
+     *  - thư mục cha (ví dụ Download/Hopamviet) -> dùng <cha>/ChordOffline;
+     *  - chính thư mục ChordOffline, hoặc thư mục đang chứa trực tiếp các thư mục bài (W8IU…) -> dùng luôn.
+     */
     private fun appDir(create: Boolean): DocumentFile? {
         val root = treeUri?.let { DocumentFile.fromTreeUri(context, it) } ?: return null
-        return root.findFile(DIR) ?: if (create) root.createDirectory(DIR) else null
+        if (root.name.equals(DIR, ignoreCase = true)) return root
+        root.findFile(DIR)?.takeIf { it.isDirectory }?.let { return it }
+        if (looksLikeSongDir(root)) return root
+        return if (create) root.createDirectory(DIR) else null
     }
+
+    private fun looksLikeSongDir(dir: DocumentFile): Boolean = dir.listFiles().asSequence()
+        .filter { it.isDirectory && SongStore.isValidKey(it.name ?: "") }.take(5)
+        .any { d -> d.findFile("song.cho") != null || d.findFile("page.html") != null }
+
+    /** Ghi/đọc file phụ (tiến độ quét) ở thư mục gốc của bản sao lưu. */
+    fun writeExtra(name: String, text: String) {
+        val app = appDir(create = true) ?: return
+        val f = app.findFile(name) ?: app.createFile("application/octet-stream", name) ?: return
+        context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(text.toByteArray()) }
+    }
+
+    fun readExtra(name: String): String? = runCatching {
+        val f = appDir(create = false)?.findFile(name) ?: return null
+        context.contentResolver.openInputStream(f.uri)!!.use { it.readBytes().toString(Charsets.UTF_8) }
+    }.getOrNull()
 
     private fun mime(name: String) = when {
         name.endsWith(".html") -> "text/html"
@@ -71,7 +95,8 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
 
     /** Khôi phục bài từ thư mục lưu vào app (không ghi đè bài đang có). */
     fun restoreAll(): Result {
-        val app = appDir(create = false) ?: return Result(0, 0, listOf("Không thấy thư mục $DIR trong thư mục đã chọn"))
+        val app = appDir(create = false) ?: return Result(0, 0, listOf(
+            "Không thấy bài nào: hãy chọn thư mục ChordOffline hoặc thư mục chứa nó (ví dụ Download/Hopamviet)"))
         var songs = 0; var files = 0; val errors = mutableListOf<String>()
         for (dir in app.listFiles().filter { it.isDirectory }) {
             val key = dir.name ?: continue

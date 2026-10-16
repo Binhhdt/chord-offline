@@ -129,6 +129,18 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.5.1: khôi phục linh hoạt & nhớ tiến độ quét
+
+- **Khôi phục** nhận đúng thư mục bất kể bạn chọn thư mục nào:
+  - thư mục cha, ví dụ `Download/Hopamviet`;
+  - chính thư mục `ChordOffline`;
+  - thư mục đang chứa trực tiếp các thư mục bài (`W8IU…`).
+
+  Trước đây app chỉ nhận thư mục cha.
+- **Nhớ đã quét tới trang mấy** cho từng danh mục: sau mỗi trang quét xong, app lưu trang xa nhất, tổng số trang và trang để quét tiếp vào `files/scan_progress.tsv`. App cũng sao lưu thông tin này vào thư mục lưu file (`ChordOffline/_tien_do_quet.tsv`), nên tắt app hay cài lại rồi Khôi phục vẫn còn.
+- Tab Tải nhiều có thêm khung **"Tiến độ các danh mục đã quét"**, mỗi dòng hiện dạng `category/2/nhac-tru-tinh — Đã quét tới trang 40/599 · quét tiếp từ trang 41`. Bấm vào một dòng để chọn danh mục đó, rồi bấm **Quét tiếp**.
+- Nhật ký quét ghi thêm **số bài đã lưu** trên mỗi trang, ví dụ `Trang 5/599: 30 bài (30 mới, 30 đã lưu)`, để thấy ngay đã tải tới đâu.
+
 ## Tính năng v0.5.0: giao diện "Sân khấu đêm" & màu hợp âm
 
 - **Giao diện mẫu B (đã chọn):**

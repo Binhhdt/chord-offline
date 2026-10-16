@@ -461,9 +461,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Chỉ lấy link; KHÔNG tải bài cho tới khi người dùng xác nhận.
     // =====================================================================
 
-    /** Đổi URL thì quên điểm "Quét tiếp" của danh sách cũ. */
-    fun setDiscoverUrl(v: String) = _discover.update { it.copy(url = v, resumeUrl = null, reachedEnd = false, lastScanned = 0, totalPages = null) }
+    // ---------- Tiến độ quét (lưu file + sao lưu cùng thư mục lưu file) ----------
+    private val progressFile = File(app.filesDir, "scan_progress.tsv")
+    private val _progress = MutableStateFlow(runCatching { ScanProgressBook.parse(progressFile.readText()) }.getOrDefault(ScanProgressBook()))
+    val progress: StateFlow<ScanProgressBook> = _progress
+
+    private fun saveProgress(b: ScanProgressBook) {
+        _progress.value = b
+        runCatching { progressFile.writeText(b.serialize()) }
+        if (backup.autoBackup) runCatching { if (backup.hasValidFolder()) backup.writeExtra(ScanProgressBook.FILE_NAME, b.serialize()) }
+    }
+
+    /** Đổi URL: nếu danh sách này đã quét trước đó (kể cả trước khi tắt/cài lại app) thì nạp lại điểm "Quét tiếp". */
+    fun setDiscoverUrl(v: String) {
+        val p = _progress.value.get(v.trim())
+        _discover.update {
+            it.copy(url = v, resumeUrl = p?.resumeUrl, reachedEnd = p?.reachedEnd ?: false,
+                lastScanned = p?.lastScanned ?: 0, totalPages = p?.totalPages)
+        }
+    }
+
+    fun forgetProgress(listKey: String) = saveProgress(_progress.value.remove(listKey))
     private var discoverNext: String? = null
+
+    init { setDiscoverUrl(_discover.value.url) }
     fun setDiscoverPages(n: Int) = _discover.update { it.copy(maxPages = n.coerceIn(1, ListingPolicy.MAX_PAGES_LIMIT)) }
 
     fun discoverStart() {
@@ -538,12 +559,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val page = onBigStack("listing-parse") { ListingParser.parse(f.body, f.finalUrl ?: cur) }
                 val added = d.add(cur, page)
                 val total = page.lastPage
-                val logLine = "Trang $pageNo${total?.let { "/$it" } ?: ""}: ${page.songs.size} bài (${added} mới) · HTTP ${f.status} · ${f.elapsedMs} ms" +
+                val savedHere = withContext(Dispatchers.IO) {
+                    page.songs.count { s -> store.isSaved(store.keyForUrl(s.url), _batch.value.queue.saveCompact, _batch.value.queue.savePage) }
+                }
+                val logLine = "Trang $pageNo${total?.let { "/$it" } ?: ""}: ${page.songs.size} bài (${added} mới" +
+                    (if (savedHere > 0) ", $savedHere đã lưu" else "") + ") · HTTP ${f.status} · ${f.elapsedMs} ms" +
                     (if (page.method == "fallback") " · ⚠ không thấy cột chính, đã loại cột bên/menu" else "") +
                     (if (page.excluded > 0) " · bỏ ${page.excluded} link ngoài danh sách chính" else "")
                 val found = d.found
                 val items = withContext(Dispatchers.IO) { found.map { toFoundItem(it) } }
                 discoverNext = page.nextUrl
+                val stopEnd = page.nextUrl == null
+                withContext(Dispatchers.IO) {
+                    saveProgress(_progress.value.record(cur, pageNo, total, page.nextUrl, stopEnd, System.currentTimeMillis()))
+                }
                 _discover.update { it.copy(log = it.log + logLine, items = mergeSelection(it.items, items),
                     lastScanned = pageNo, totalPages = total ?: it.totalPages) }
                 if (d.pages == 1 && page.songs.isEmpty()) {
@@ -670,11 +699,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun backupAllNow() = runStorageJob("Đang sao lưu…") {
         val r = backup.backupAll()
+        runCatching { backup.writeExtra(ScanProgressBook.FILE_NAME, _progress.value.serialize()) }
         "Đã sao lưu ${r.songs} bài (${r.files} file mới/đổi)." + errText(r.errors)
     }
 
     fun restoreNow() = runStorageJob("Đang khôi phục…") {
         val r = backup.restoreAll()
+        backup.readExtra(ScanProgressBook.FILE_NAME)?.let { t ->
+            val merged = _progress.value.merge(ScanProgressBook.parse(t))
+            saveProgress(merged)
+            setDiscoverUrl(_discover.value.url)
+        }
         "Đã khôi phục ${r.songs} bài (${r.files} file). Bài đã có trong app được giữ nguyên." + errText(r.errors)
     }
 

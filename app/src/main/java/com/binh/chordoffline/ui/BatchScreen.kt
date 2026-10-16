@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.binh.chordoffline.core.BatchItem
 import com.binh.chordoffline.core.ItemState
 import com.binh.chordoffline.core.ListingPolicy
+import com.binh.chordoffline.core.ScanProgressBook
 import com.binh.chordoffline.core.Version
 
 /**
@@ -37,6 +38,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
     val b by vm.batch.collectAsState()
     val d by vm.discover.collectAsState()
     val check by vm.check.collectAsState()
+    val progress by vm.progress.collectAsState()
     var mode by rememberSaveable { mutableIntStateOf(0) }
     var input by rememberSaveable { mutableStateOf("") }
     var showPreview by rememberSaveable { mutableStateOf(true) }
@@ -68,6 +70,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
 
         if (mode == 0) {
             discoverScanCard(vm, d, b.running)
+            if (progress.all.isNotEmpty()) item { ScanHistoryCard(vm, progress, d.url) }
             item { SaveOptionsCard(vm, b) }
             if (d.items.isNotEmpty()) item { PreviewHeader(vm, d, b.running, showPreview) { showPreview = !showPreview } }
             // Tiến độ ngay dưới nút xác nhận
@@ -290,3 +293,34 @@ private fun fileName(context: android.content.Context, uri: Uri): String? = runC
         if (c.moveToFirst()) c.getString(0) else null
     }
 }.getOrNull()
+
+/** Danh sách các danh mục đã quét + đã tới trang mấy (lưu cả sau khi tắt/cài lại app). Bấm để quét tiếp. */
+@Composable
+private fun ScanHistoryCard(vm: AppViewModel, book: ScanProgressBook, currentUrl: String) {
+    var open by rememberSaveable { mutableStateOf(true) }
+    SectionCard("Tiến độ các danh mục đã quét") {
+        TextButton(onClick = { open = !open }, contentPadding = PaddingValues(0.dp)) {
+            Text(if (open) "▲ Thu gọn" else "▼ Xem ${book.all.size} danh mục")
+        }
+        if (open) book.all.forEach { p ->
+            val isCurrent = runCatching { ListingPolicy.listKey(currentUrl) == p.listKey }.getOrDefault(false)
+            Row(Modifier.fillMaxWidth().clickable { vm.setDiscoverUrl(p.url) }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.label, fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "Đã quét tới trang ${p.lastScanned}${p.totalPages?.let { "/$it" } ?: ""}" +
+                            when { p.reachedEnd -> " · ✅ hết trang"; p.resumePage != null -> " · quét tiếp từ trang ${p.resumePage}"; else -> "" } +
+                            " · ${AppViewModel.fmt(p.updatedAt)}",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Text(if (isCurrent) "đang chọn" else "Chọn ›", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Text("Chọn một danh mục rồi bấm \"Quét tiếp\" ở trên. Tiến độ được lưu trong app và sao lưu cùng thư mục lưu file.",
+            style = MaterialTheme.typography.labelSmall)
+    }
+}
