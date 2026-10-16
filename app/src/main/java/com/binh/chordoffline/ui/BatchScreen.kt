@@ -4,6 +4,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,6 +31,7 @@ import com.binh.chordoffline.core.Version
  * Màn "Tải nhiều": lấy danh sách từ trang danh mục (xem trước, chọn, xác nhận) hoặc dán link / nhập TXT.
  * Tải tuần tự, nghỉ 3 giây giữa các request; bài đã lưu thành công không tải lại.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) -> Unit) {
     val b by vm.batch.collectAsState()
@@ -36,6 +39,8 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
     val check by vm.check.collectAsState()
     var mode by rememberSaveable { mutableIntStateOf(0) }
     var input by rememberSaveable { mutableStateOf("") }
+    var showPreview by rememberSaveable { mutableStateOf(true) }
+    var showQueue by rememberSaveable { mutableStateOf(false) }
     val q = b.queue
     val context = LocalContext.current
     val txtPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -43,6 +48,8 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
     }
 
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Thanh tiến độ gọn luôn dính ở đầu màn hình khi có hàng đợi -> cuộn tới đâu cũng thấy
+        if (q.total > 0) stickyHeader(key = "mini-progress") { MiniProgress(vm, b, check.confirmed) }
         item {
             Text("Tải nhiều bài", style = MaterialTheme.typography.titleLarge)
             Text("Tải tuần tự, nghỉ ${AppViewModel.BATCH_DELAY_MS / 1000} giây giữa các request. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
@@ -59,8 +66,14 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
             }
         }
 
-        if (mode == 0) discoverSection(vm, d, b.running)
-        else item {
+        if (mode == 0) {
+            discoverScanCard(vm, d, b.running)
+            item { SaveOptionsCard(vm, b) }
+            if (d.items.isNotEmpty()) item { PreviewHeader(vm, d, b.running, showPreview) { showPreview = !showPreview } }
+            // Tiến độ ngay dưới nút xác nhận
+            item { ProgressCard(vm, b, check.confirmed) }
+            if (showPreview) previewItems(vm, d)
+        } else item {
             OutlinedTextField(
                 value = input, onValueChange = { input = it },
                 label = { Text("Mỗi dòng một link https://hopamviet.vn/chord/song/…") },
@@ -83,25 +96,63 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
             }
         }
 
-        item {
-            SectionCard("Kiểu lưu") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = q.saveCompact, onCheckedChange = { vm.batchOptions(it, q.savePage) }, enabled = !b.running)
-                    Text("Lời/hợp âm gọn (.cho, vài KB/bài)")
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = q.savePage, onCheckedChange = { vm.batchOptions(q.saveCompact, it) }, enabled = !b.running)
-                    Text("Nguyên trang HTML (~300 KB/bài)")
-                }
-                Text("Bài đã có đủ các bản đã chọn sẽ được bỏ qua, không tải lại.", style = MaterialTheme.typography.labelSmall)
+        if (mode == 1) {
+            item { SaveOptionsCard(vm, b) }
+            item { ProgressCard(vm, b, check.confirmed) }
+        }
+        if (q.total > 0) item {
+            TextButton(onClick = { showQueue = !showQueue }) {
+                Text(if (showQueue) "▲ Ẩn danh sách hàng đợi" else "▼ Xem danh sách hàng đợi (${q.total} bài)")
             }
         }
-        item { ProgressCard(vm, b, check.confirmed) }
-        items(q.items, key = { it.url }) { item -> BatchRow(item, b.running && b.currentUrl == item.url, onOpen) }
+        if (showQueue) items(q.items, key = { it.url }) { item -> BatchRow(item, b.running && b.currentUrl == item.url, onOpen) }
     }
 }
 
-private fun LazyListScope.discoverSection(vm: AppViewModel, d: DiscoverUi, batchRunning: Boolean) {
+@Composable
+private fun SaveOptionsCard(vm: AppViewModel, b: BatchUi) {
+    val q = b.queue
+    SectionCard("Kiểu lưu") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = q.saveCompact, onCheckedChange = { vm.batchOptions(it, q.savePage) }, enabled = !b.running)
+            Text("Lời/hợp âm gọn (.cho, vài KB/bài)")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = q.savePage, onCheckedChange = { vm.batchOptions(q.saveCompact, it) }, enabled = !b.running)
+            Text("Nguyên trang HTML (~300 KB/bài)")
+        }
+        Text("Bài đã có đủ các bản đã chọn sẽ được bỏ qua, không tải lại.", style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/** Thanh tiến độ gọn dính trên cùng: số bài, % , thời gian còn lại ước tính, nút Tạm dừng/Tiếp tục. */
+@Composable
+private fun MiniProgress(vm: AppViewModel, b: BatchUi, confirmed: Boolean) {
+    val q = b.queue
+    val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
+    val left = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING)
+    val etaMin = (left * (AppViewModel.BATCH_DELAY_MS / 1000 + 1) + 59) / 60
+    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text((if (b.running) "⬇ Đang tải " else "⏸ Hàng đợi ") + "${q.finished}/${q.total}",
+                        fontWeight = FontWeight.Bold)
+                    Text("✅ $done  ❌ $err  ⏳ $left" + if (left > 0) " · còn ~$etaMin phút" else "",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                when {
+                    b.running -> OutlinedButton(onClick = vm::batchPause, enabled = !b.pauseRequested) { Text("Tạm dừng") }
+                    q.hasPending -> Button(onClick = vm::batchStart, enabled = confirmed) { Text("Tiếp tục") }
+                }
+            }
+            LinearProgressIndicator(progress = { if (q.total == 0) 0f else q.finished.toFloat() / q.total },
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+        }
+    }
+}
+
+private fun LazyListScope.discoverScanCard(vm: AppViewModel, d: DiscoverUi, batchRunning: Boolean) {
     item {
         SectionCard("Lấy danh sách từ trang danh mục") {
             Text("Dán link trang thể loại, nhạc sĩ, ca sĩ, điệu, bài hot hoặc bài mới. Trang tìm kiếm bị robots.txt của website chặn nên không hỗ trợ.",
@@ -144,20 +195,28 @@ private fun LazyListScope.discoverSection(vm: AppViewModel, d: DiscoverUi, batch
                 color = if (d.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
-    if (d.items.isNotEmpty()) {
-        item {
-            SectionCard("Xem trước: ${d.items.size} bài · đã chọn ${d.selectedCount}") {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { vm.discoverSelect(true) }) { Text("Chọn tất cả") }
-                    TextButton(onClick = { vm.discoverSelect(false) }) { Text("Bỏ chọn") }
-                    TextButton(onClick = { vm.discoverSelect(null) }) { Text("Chỉ bài chưa lưu") }
-                }
-                Text("Bài đã lưu hoặc đã có trong hàng đợi được bỏ chọn sẵn.", style = MaterialTheme.typography.labelSmall)
-                Button(onClick = vm::discoverConfirm, enabled = !d.running && !batchRunning && d.selectedCount > 0) {
-                    Text("Xác nhận & tải ${d.selectedCount} bài")
-                }
-            }
+}
+
+/** Phần đầu khung xem trước: số bài, chọn/bỏ chọn, nút Xác nhận & tải, nút ẩn/hiện danh sách. */
+@Composable
+private fun PreviewHeader(vm: AppViewModel, d: DiscoverUi, batchRunning: Boolean, showList: Boolean, onToggle: () -> Unit) {
+    SectionCard("Xem trước: ${d.items.size} bài · đã chọn ${d.selectedCount}") {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = { vm.discoverSelect(true) }) { Text("Chọn tất cả") }
+            TextButton(onClick = { vm.discoverSelect(false) }) { Text("Bỏ chọn") }
+            TextButton(onClick = { vm.discoverSelect(null) }) { Text("Chỉ bài chưa lưu") }
         }
+        Text("Bài đã lưu hoặc đã có trong hàng đợi được bỏ chọn sẵn.", style = MaterialTheme.typography.labelSmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = vm::discoverConfirm, enabled = !d.running && !batchRunning && d.selectedCount > 0) {
+                Text("Xác nhận & tải ${d.selectedCount} bài")
+            }
+            TextButton(onClick = onToggle) { Text(if (showList) "▲ Ẩn danh sách" else "▼ Hiện danh sách") }
+        }
+    }
+}
+
+private fun LazyListScope.previewItems(vm: AppViewModel, d: DiscoverUi) {
         items(d.items, key = { "found:" + it.song.url }) { fi ->
             Row(Modifier.fillMaxWidth().clickable(enabled = !d.running) { vm.discoverToggle(fi.song.url) },
                 verticalAlignment = Alignment.CenterVertically) {
@@ -170,7 +229,6 @@ private fun LazyListScope.discoverSection(vm: AppViewModel, d: DiscoverUi, batch
                 }
             }
         }
-    }
 }
 
 @Composable
