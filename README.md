@@ -12,8 +12,13 @@ App chưa được chạy thử trên thiết bị thật. Kết quả tải tr�
 |---|---|
 | Parser, kiểm tra selector, so sánh HTML, robots.txt, lưu trữ (`core/`) | ✅ Đã biên dịch bằng Kotlin 2.0.21 và chạy 10 unit test trên JVM: tất cả đều đạt |
 | Parser trên file HTML đã lưu từ trình duyệt (bài *Người dưng*) | ✅ Đủ 5 selector; 53 dòng (7 dòng trống); 64 hợp âm inline; khớp với parser Python |
-| Tải trực tiếp HTTP từ Android (`HttpFetcher`) | ⏳ **Chưa chạy thử.** Môi trường build không truy cập được hopamviet.vn |
-| Biên dịch APK (Compose UI) | ⏳ Chưa build. Sẽ build lần đầu bằng GitHub Actions |
+| Tải trực tiếp HTTP từ Android (`HttpFetcher`) | ✅ Đã chạy trên điện thoại thật (v0.1.2, 16/10/2026 19:42): bài *Vì lỡ thương nhau* trả HTTP 200, h2, `text/html; charset=UTF-8`, 358,5 KB, 450 ms, không redirect; robots.txt cho phép |
+| Lời/hợp âm trong HTML server | ✅ **Có sẵn, không cần JavaScript**: đủ 5 selector; 25 dòng, 42 hợp âm inline (khớp 42 `span.chord`) |
+| Lưu 2 bản độc lập | ✅ Lưu nguyên trang (358,5 KB) và bản gọn (1,8 KB), trạng thái riêng từng bản |
+| Biên dịch APK (Compose UI) | ✅ GitHub Actions build thành công |
+| So sánh với file HTML đã lưu trên điện thoại / mở offline ở chế độ máy bay | ⏳ Chưa kiểm tra |
+
+Lỗi đã gặp và đã sửa: v0.1.0–0.1.1 crash do `PatternSyntaxException`. Regex ICU trên Android không chấp nhận `}`/`]` chưa escape. Lỗi đã được sửa ở v0.1.2, kèm test `RegexAndroidCompatTest` để chặn lỗi này tái diễn.
 
 ## Tuân thủ website
 
