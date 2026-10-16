@@ -21,14 +21,19 @@ class ChordColorsTest {
         assertNull(ChordColors.parseHex("xyzxyz"))
         assertNull(ChordColors.parseHex(""))
         assertEquals("#4FD1C5", ChordColors.toHex(0xFF4FD1C5L))
-        assertEquals("#F2A33A", ChordColors.toHex(ChordColors.DEFAULT))
+        assertEquals("#2B3CC2", ChordColors.toHex(ChordColors.DEFAULT))
     }
 
     @Test fun contrastMath() {
         assertEquals(21.0, ChordColors.contrast(0xFF000000L, 0xFFFFFFFFL), 0.01)
         assertEquals(1.0, ChordColors.contrast(0xFF777777L, 0xFF777777L), 0.0001)
-        assertFalse("màu tối trên nền tối không đọc được", ChordColors.readable(0xFF333344L))
-        assertTrue(ChordColors.readable(0xFFFFFFFFL))
+        assertFalse("màu nhạt trên nền trắng không đọc được", ChordColors.readable(0xFFF2A33AL))
+        assertTrue(ChordColors.readable(0xFF151826L))
+    }
+
+    @Test fun oldAmberFromDarkThemeIsReplaced() {
+        assertEquals(ChordColors.DEFAULT, ChordColors.sanitize(0xFFF2A33AL))   // hổ phách của giao diện tối cũ
+        assertEquals(0xFFC62828L, ChordColors.sanitize(0xFFC62828L))
     }
 
     @Test fun defaultStyle() {

@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Icon mẫu B "Sân khấu đêm": ngoặc [ ] hổ phách quanh thế bấm hợp âm. Nội dung nằm trong vùng an toàn 66dp. -->
+<!-- Icon mẫu D "Tối giản xanh": miếng gảy đàn trắng có mũi tên tải xuống, trên nền xanh chàm.
+     Hình gốc vẽ trong khung 240, thu 0.4 và dời 6dp để nằm gọn trong vùng an toàn 66dp. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <group android:scaleX="0.45" android:scaleY="0.45">
-        <path android:pathData="M96,70 V170 M120,70 V170 M144,70 V170 M90,100 H150 M90,134 H150"
-            android:strokeColor="#3A3E48" android:strokeWidth="4" android:fillColor="#00000000"/>
-        <path android:pathData="M78,62 H58 V178 H78 M162,62 H182 V178 H162"
-            android:strokeColor="#F2A33A" android:strokeWidth="16" android:fillColor="#00000000"
+    <group android:scaleX="0.4" android:scaleY="0.4" android:translateX="6" android:translateY="6">
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M120,52 C162,52 186,70 186,98 C186,132 150,172 120,194 C90,172 54,132 54,98 C54,70 78,52 120,52 Z"/>
+        <path android:pathData="M120,86 V138 M98,118 L120,140 L142,118"
+            android:strokeColor="#2B3CC2" android:strokeWidth="14" android:fillColor="#00000000"
             android:strokeLineCap="round" android:strokeLineJoin="round"/>
-        <path android:pathData="M84,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#EDEAE3"/>
-        <path android:pathData="M108,151 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#F2A33A"/>
-        <path android:pathData="M132,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#EDEAE3"/>
     </group>
 </vector>

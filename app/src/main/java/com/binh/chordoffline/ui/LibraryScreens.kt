@@ -368,7 +368,7 @@ fun PageViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
  * CSS chỉ dùng khi XEM (file đã lưu giữ nguyên): trang gốc dựa vào CSS/JS bên ngoài nên khi offline
  * icon SVG phình to và lời mất xuống dòng. Thu nhỏ icon, ẩn quảng cáo, giữ xuống dòng của lời.
  */
-private fun withViewerCss(html: String, chordHex: String = "#F2A33A"): String {
+private fun withViewerCss(html: String, chordHex: String = "#2B3CC2"): String {
     val css = """<style id="chord-offline-viewer">
         body{font-family:sans-serif;padding:8px;line-height:1.5}
         svg,img{max-width:1.4em!important;max-height:1.4em!important;width:auto!important;height:auto!important}
@@ -457,7 +457,7 @@ private fun ChordColorDialog(style: ChordStyle, onPick: (Long) -> Unit, onHighli
                                 .border(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline, CircleShape)
                                 .clickable { onPick(c.argb); hex = ChordColors.toHex(c.argb) },
                                 contentAlignment = Alignment.Center) {
-                                if (selected) Text("✓", color = Color(0xFF15171C), fontWeight = FontWeight.Bold)
+                                if (selected) Text("✓", color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

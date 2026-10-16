@@ -7,24 +7,24 @@ data class ChordStyle(
     val highlight: Boolean = false,
 )
 
-/** Bảng màu hợp âm cho nền tối của giao diện "Sân khấu đêm" + kiểm tra độ tương phản. */
+/** Bảng màu hợp âm cho nền sáng của giao diện "Tối giản xanh" + kiểm tra độ tương phản. */
 object ChordColors {
     data class Named(val name: String, val argb: Long)
 
-    const val DEFAULT = 0xFFF2A33AL           // hổ phách
-    const val BACKGROUND = 0xFF15171CL        // nền màn hình xem bài
+    const val DEFAULT = 0xFF2B3CC2L           // xanh chàm
+    const val BACKGROUND = 0xFFFFFFFFL        // nền màn hình xem bài (trắng)
 
     val PALETTE = listOf(
-        Named("Hổ phách", 0xFFF2A33AL),
-        Named("Vàng chanh", 0xFFE8D44DL),
-        Named("Cam đào", 0xFFFF9A6BL),
-        Named("Đỏ san hô", 0xFFFF6B6BL),
-        Named("Hồng", 0xFFFF7AA8L),
-        Named("Tím", 0xFFB69CFFL),
-        Named("Xanh dương", 0xFF6CA8FFL),
-        Named("Xanh ngọc", 0xFF4FD1C5L),
-        Named("Xanh lá", 0xFF7BD88FL),
-        Named("Trắng", 0xFFF5F5F5L),
+        Named("Xanh chàm", 0xFF2B3CC2L),
+        Named("Xanh dương", 0xFF1565C0L),
+        Named("Xanh ngọc", 0xFF00796BL),
+        Named("Xanh lá", 0xFF2E7D32L),
+        Named("Cam đất", 0xFFB45309L),
+        Named("Đỏ", 0xFFC62828L),
+        Named("Hồng", 0xFFAD1457L),
+        Named("Tím", 0xFF6A1B9AL),
+        Named("Nâu", 0xFF6D4C41L),
+        Named("Đen", 0xFF151826L),
     )
 
     /** "#4FD1C5", "4fd1c5", "#4FC" -> 0xFF4FD1C5; null nếu không hợp lệ. */
@@ -50,6 +50,9 @@ object ChordColors {
         return (maxOf(l1, l2) + 0.05) / (minOf(l1, l2) + 0.05)
     }
 
-    /** Đủ rõ trên nền tối: tối thiểu 4.5:1 (chuẩn chữ thường WCAG AA). */
+    /** Đủ rõ trên nền: tối thiểu 4.5:1 (chuẩn chữ thường WCAG AA). */
     fun readable(argb: Long, background: Long = BACKGROUND) = contrast(argb, background) >= 4.5
+
+    /** Màu đã lưu từ giao diện cũ (nền tối) có thể không đọc được trên nền sáng -> dùng màu mặc định. */
+    fun sanitize(argb: Long): Long = if (readable(argb)) argb else DEFAULT
 }

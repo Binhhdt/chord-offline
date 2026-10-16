@@ -129,6 +129,19 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.6.0: giao diện & icon mẫu D "Tối giản xanh"
+
+- **Giao diện mẫu D**, thay cho mẫu B "Sân khấu đêm" của v0.5.0:
+  - nền sáng `#F4F5FA` và thẻ trắng, chữ đậm `#151826`, một điểm nhấn **xanh chàm `#2B3CC2`**;
+  - vẫn dùng font Be Vietnam Pro, tiêu đề ExtraBold;
+  - thanh trạng thái và thanh điều hướng dùng nền sáng với biểu tượng tối;
+  - nền cửa sổ sáng ngay từ khi mở app.
+- **Icon mới:** miếng gảy đàn màu trắng có mũi tên tải xuống, nằm trên nền xanh chàm. Đây là icon thích ứng, có kèm bản một màu cho "Biểu tượng theo chủ đề" trên Android 13 trở lên.
+- **Màu hợp âm cho nền sáng:**
+  - 10 màu: Xanh chàm (mặc định), Xanh dương, Xanh ngọc, Xanh lá, Cam đất, Đỏ, Hồng, Tím, Nâu, Đen. Có test kiểm tra tất cả đạt tương phản ≥ 4.5:1 trên nền trắng;
+  - màu đã chọn ở bản tối (như hổ phách) khó đọc trên nền trắng, nên app tự chuyển về xanh chàm. Màu nào vẫn đọc tốt thì được giữ.
+- Mọi chức năng khác giữ nguyên.
+
 ## v0.5.1: khôi phục linh hoạt & nhớ tiến độ quét
 
 - **Khôi phục** nhận đúng thư mục bất kể bạn chọn thư mục nào:

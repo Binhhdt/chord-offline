@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bản một màu cho "Biểu tượng theo chủ đề" (Android 13+). -->
+<!-- Bản một màu cho "Biểu tượng theo chủ đề" (Android 13+): viền miếng gảy + mũi tên. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <group android:scaleX="0.45" android:scaleY="0.45">
-        <path android:pathData="M78,62 H58 V178 H78 M162,62 H182 V178 H162"
-            android:strokeColor="#FFFFFF" android:strokeWidth="16" android:fillColor="#00000000"
+    <group android:scaleX="0.4" android:scaleY="0.4" android:translateX="6" android:translateY="6">
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="12" android:fillColor="#00000000" android:strokeLineJoin="round"
+            android:pathData="M120,58 C158,58 180,74 180,99 C180,130 147,166 120,186 C93,166 60,130 60,99 C60,74 82,58 120,58 Z"/>
+        <path android:pathData="M120,90 V136 M100,118 L120,138 L140,118"
+            android:strokeColor="#FFFFFF" android:strokeWidth="14" android:fillColor="#00000000"
             android:strokeLineCap="round" android:strokeLineJoin="round"/>
-        <path android:pathData="M84,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0 M108,151 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0 M132,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0"
-            android:fillColor="#FFFFFF"/>
     </group>
 </vector>

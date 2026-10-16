@@ -117,7 +117,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- Màu hợp âm (lưu cho mọi bài, chỉ đổi hiển thị) ----------
     private val displayPrefs = app.getSharedPreferences("display", android.content.Context.MODE_PRIVATE)
     private val _chordStyle = MutableStateFlow(ChordStyle(
-        color = displayPrefs.getLong("chord_color", ChordColors.DEFAULT),
+        color = ChordColors.sanitize(displayPrefs.getLong("chord_color", ChordColors.DEFAULT)),
         highlight = displayPrefs.getBoolean("chord_highlight", false),
     ))
     val chordStyle: StateFlow<ChordStyle> = _chordStyle

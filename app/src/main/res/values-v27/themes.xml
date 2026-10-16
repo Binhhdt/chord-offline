@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ChordOffline" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/minimal_page</item>
+        <item name="android:statusBarColor">@color/minimal_page</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/minimal_card</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">#2B3CC2</item>
+    </style>
+</resources>
