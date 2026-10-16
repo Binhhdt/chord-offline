@@ -9,7 +9,12 @@ import com.binh.chordoffline.core.*
 import com.binh.chordoffline.onBigStack
 import com.binh.chordoffline.net.FetchResult
 import com.binh.chordoffline.net.HttpFetcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -40,6 +45,17 @@ data class CheckState(
     val errorDetail: String? = null,
 )
 
+/** Trạng thái màn "Tải nhiều". Hàng đợi được lưu ra file sau mỗi thay đổi. */
+data class BatchUi(
+    val queue: BatchQueue = BatchQueue(),
+    val running: Boolean = false,
+    val pauseRequested: Boolean = false,
+    val currentUrl: String? = null,
+    val waitSeconds: Int = 0,
+    val message: String? = null,
+    val lastAdd: AddResult? = null,
+)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val fetcher = HttpFetcher()
@@ -55,6 +71,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var lastRequestAt = 0L
     private val minIntervalMs = 5_000L
 
+    // ---------- Tải nhiều ----------
+    private val batchFile = File(app.filesDir, "batch_queue.tsv")
+    private val _batch = MutableStateFlow(BatchUi(queue = loadBatch()))
+    val batch: StateFlow<BatchUi> = _batch
+    private var batchJob: Job? = null
+
     fun setUrl(v: String) = _check.update { it.copy(url = v) }
     fun setConfirmed(v: Boolean) = _check.update { it.copy(confirmed = v) }
 
@@ -63,6 +85,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = _check.value
         if (!s.confirmed) { _check.update { it.copy(message = "Hãy xác nhận bạn có quyền lưu nội dung này trước.") }; return }
         UrlPolicy.validateSongUrl(s.url)?.let { reason -> _check.update { it.copy(message = reason) }; return }
+        if (_batch.value.running) { _check.update { it.copy(message = "Đang tải hàng loạt — hãy tạm dừng ở tab \"Tải nhiều\" trước.") }; return }
         val wait = minIntervalMs - (System.currentTimeMillis() - lastRequestAt)
         if (wait > 0) { _check.update { it.copy(message = "Vui lòng đợi ${(wait + 999) / 1000} giây trước lần tải tiếp theo.") }; return }
 
@@ -157,7 +180,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val st = withContext(Dispatchers.IO) {
                 store.savePage(key, s.parsed?.title, html,
-                    FetchMeta(f.requestedUrl, f.finalUrl ?: f.requestedUrl, f.status ?: 0, f.contentType, f.fetchedAtMillis))
+                    FetchMeta(f.requestedUrl, f.finalUrl ?: f.requestedUrl, f.status ?: 0, f.contentType, f.fetchedAtMillis),
+                    song = s.parsed)
             }
             _check.update { it.copy(pageStatus = st, songKey = key) }
             refreshLibrary()
@@ -201,7 +225,172 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun load(key: String, v: Version): String? = withContext(Dispatchers.IO) { store.read(key, v) }
 
+    // =====================================================================
+    // Tải nhiều URL: tuần tự, nghỉ BATCH_DELAY_MS giữa các request, có tạm dừng / tiếp tục / huỷ / thử lại.
+    // Gặp 403/429/503 hoặc trang xác minh -> tự tạm dừng cả hàng đợi, không thử vượt qua.
+    // =====================================================================
+
+    private fun loadBatch(): BatchQueue =
+        runCatching { BatchQueue.parse(batchFile.readText()) }.getOrDefault(BatchQueue()).recoverAfterRestart()
+
+    private val batchLock = Any()
+
+    /** Đổi hàng đợi và ghi ngay ra file (file nhỏ, ghi kiểu tạm-rồi-đổi-tên). */
+    private fun setQueue(f: (BatchQueue) -> BatchQueue) = synchronized(batchLock) {
+        val q = f(_batch.value.queue)
+        _batch.update { it.copy(queue = q) }
+        runCatching {
+            val tmp = File(batchFile.parentFile, batchFile.name + ".tmp")
+            tmp.writeText(q.serialize())
+            if (!tmp.renameTo(batchFile)) { batchFile.delete(); tmp.renameTo(batchFile) }
+        }
+        q
+    }
+
+    fun batchAdd(text: String): AddResult {
+        var result = AddResult(0, 0, emptyList())
+        setQueue { q -> q.add(text).also { result = it.second }.first }
+        _batch.update { it.copy(lastAdd = result, message = null) }
+        return result
+    }
+
+    fun batchOptions(compact: Boolean, page: Boolean) {
+        if (_batch.value.running) return
+        setQueue { it.copy(saveCompact = compact, savePage = page) }
+    }
+
+    fun batchStart() {
+        val b = _batch.value
+        when {
+            b.running -> return
+            !_check.value.confirmed -> { _batch.update { it.copy(message = "Hãy xác nhận bạn có quyền lưu nội dung trước.") }; return }
+            !b.queue.saveCompact && !b.queue.savePage -> { _batch.update { it.copy(message = "Chọn ít nhất một kiểu lưu.") }; return }
+            !b.queue.hasPending -> { _batch.update { it.copy(message = "Không còn mục nào đang chờ.") }; return }
+            _check.value.loading -> { _batch.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.") }; return }
+        }
+        _batch.update { it.copy(running = true, pauseRequested = false, message = null) }
+        batchJob = viewModelScope.launch { runBatch() }
+    }
+
+    fun batchPause() {
+        if (_batch.value.running) _batch.update { it.copy(pauseRequested = true, message = "Sẽ tạm dừng sau bài đang tải…") }
+    }
+
+    fun batchCancel() {
+        batchJob?.cancel()
+        batchJob = null
+        setQueue { it.cancelRemaining(System.currentTimeMillis()) }
+        _batch.update { it.copy(running = false, pauseRequested = false, currentUrl = null, waitSeconds = 0,
+            message = "Đã huỷ các mục chưa tải. Mục đã xong vẫn được giữ.") }
+    }
+
+    fun batchRetryFailed() {
+        if (_batch.value.running) return
+        setQueue { it.retryFailed() }
+        batchStart()
+    }
+
+    fun batchClearDone() { if (!_batch.value.running) setQueue { it.clearDone() } }
+    fun batchClearAll() { if (!_batch.value.running) { setQueue { it.clearAll() }; _batch.update { it.copy(lastAdd = null, message = null) } } }
+
+    private suspend fun runBatch() {
+        var stopMessage: String? = null
+        try {
+            while (true) {
+                val item = _batch.value.queue.next() ?: break
+                // nghỉ giữa các request (tính cả request robots.txt và tab Kiểm tra URL)
+                while (true) {
+                    if (_batch.value.pauseRequested) break
+                    val wait = BATCH_DELAY_MS - (System.currentTimeMillis() - lastRequestAt)
+                    if (wait <= 0) break
+                    _batch.update { it.copy(waitSeconds = ((wait + 999) / 1000).toInt(), currentUrl = null) }
+                    delay(minOf(wait, 250L))
+                }
+                if (_batch.value.pauseRequested) { stopMessage = "Đã tạm dừng. Bấm Tiếp tục để tải tiếp."; break }
+
+                setQueue { q -> q.update(item.url) { it.copy(state = ItemState.RUNNING, attempts = it.attempts + 1, message = null) } }
+                _batch.update { it.copy(currentUrl = item.url, waitSeconds = 0) }
+
+                val out = try {
+                    processBatchItem(item.url, _batch.value.queue)
+                } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                    BatchOutcome(false, null, null, "Lỗi nội bộ: ${e.javaClass.simpleName}: ${e.message}", false)
+                }
+                setQueue { q -> q.update(item.url) {
+                    it.copy(state = if (out.ok) ItemState.DONE else ItemState.ERROR, message = out.message,
+                        title = out.title ?: it.title, key = out.key ?: it.key, updatedAt = System.currentTimeMillis())
+                } }
+                refreshLibrary()
+                if (out.blocking) {
+                    stopMessage = "Website đang giới hạn/chặn truy cập (${out.message}). Đã tạm dừng cả hàng đợi — " +
+                        "app không thử vượt qua. Hãy đợi một thời gian rồi mới bấm Tiếp tục."
+                    break
+                }
+            }
+        } finally {
+            _batch.update {
+                it.copy(running = false, pauseRequested = false, currentUrl = null, waitSeconds = 0,
+                    message = it.message.takeIf { m -> m?.startsWith("Đã huỷ") == true } ?: stopMessage
+                        ?: if (it.queue.hasPending) "Đã dừng." else "Hoàn tất: ${it.queue.count(ItemState.DONE)} bài đã lưu, ${it.queue.count(ItemState.ERROR)} lỗi.")
+            }
+        }
+    }
+
+    private data class BatchOutcome(val ok: Boolean, val title: String?, val key: String?, val message: String?, val blocking: Boolean)
+
+    private suspend fun processBatchItem(url: String, opts: BatchQueue): BatchOutcome {
+        val r = robots ?: withContext(Dispatchers.IO) { loadRobots() }.also {
+            robots = it
+            delay(BATCH_DELAY_MS)   // giữ khoảng nghỉ giữa request robots.txt và request bài hát
+        }
+        val path = UrlPolicy.path(url)
+        if (!r.isAllowed(path)) return BatchOutcome(false, null, null, "robots.txt không cho phép $path", false)
+
+        lastRequestAt = System.currentTimeMillis()
+        val f = withContext(Dispatchers.IO) { fetcher.fetch(url) }
+        lastRequestAt = System.currentTimeMillis()
+        coroutineContext.ensureActive()   // đã huỷ trong lúc tải -> không lưu gì
+
+        val blocking = BatchQueue.isBlockingResponse(f.status, f.body)
+        val html = f.body
+        if (!f.ok || html == null || blocking)
+            return BatchOutcome(false, null, null, Diagnosis.explainMissingLyrics(f.status, f.contentType, html, f.error), blocking)
+
+        val parsed0 = onBigStack("batch-parse") { SongParser.parse(html, f.finalUrl) }
+        val parsed = if (parsed0.sourceUrl == null) parsed0.copy(sourceUrl = f.finalUrl ?: url) else parsed0
+        val key = store.keyFor(f.finalUrl ?: url, parsed.slugId)
+        coroutineContext.ensureActive()
+
+        val problems = mutableListOf<String>()
+        withContext(Dispatchers.IO) {
+            if (opts.saveCompact) {
+                if (!parsed.hasLyrics) {
+                    problems.add("Không có lời: " + Diagnosis.explainMissingLyrics(f.status, f.contentType, html, null))
+                } else {
+                    val st = store.saveCompact(key, parsed, ChordText.toChordPro(parsed, iso(f.fetchedAtMillis)))
+                    if (st.error != null) problems.add("Lưu bản gọn lỗi: ${st.error}")
+                }
+            }
+            if (opts.savePage) {
+                val st = store.savePage(key, parsed.title, html,
+                    FetchMeta(f.requestedUrl, f.finalUrl ?: f.requestedUrl, f.status ?: 0, f.contentType, f.fetchedAtMillis), song = parsed)
+                if (st.error != null) problems.add("Lưu nguyên trang lỗi: ${st.error}")
+            }
+            Unit
+        }
+        val info = "${parsed.lyricLineCount} dòng, ${parsed.inlineChordCount} hợp âm · ${f.elapsedMs} ms"
+        return if (problems.isEmpty()) BatchOutcome(true, parsed.title, key, info, false)
+        else BatchOutcome(false, parsed.title, key, problems.joinToString("; "), false)
+    }
+
+    override fun onCleared() {
+        // ViewModel bị huỷ (thoát app): mục đang tải quay về "Chờ" để lần sau tiếp tục.
+        if (_batch.value.running) setQueue { it.recoverAfterRestart() }
+        super.onCleared()
+    }
+
     companion object {
+        const val BATCH_DELAY_MS = 3_000L
         private val ZONE: ZoneId = ZoneId.systemDefault()
         fun fmt(ms: Long): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss").withZone(ZONE).format(Instant.ofEpochMilli(ms))
         fun iso(ms: Long): String = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZONE).format(Instant.ofEpochMilli(ms))

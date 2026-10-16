@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.binh.chordoffline.core.Version
 import com.binh.chordoffline.ui.AppViewModel
+import com.binh.chordoffline.ui.BatchScreen
 import com.binh.chordoffline.ui.CheckScreen
 import com.binh.chordoffline.ui.CompactViewer
 import com.binh.chordoffline.ui.LibraryScreen
@@ -53,13 +54,16 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
                     icon = { Text("🔍") }, label = { Text("Kiểm tra URL") })
                 NavigationBarItem(selected = tab == 1, onClick = { tab = 1; vm.refreshLibrary() },
                     icon = { Text("📚") }, label = { Text("Đã lưu") })
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
+                    icon = { Text("📥") }, label = { Text("Tải nhiều") })
             }
         },
     ) { padding ->
         val m = Modifier.padding(padding)
         when (tab) {
             0 -> CheckScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
-            else -> LibraryScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
+            1 -> LibraryScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
+            else -> BatchScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
         }
     }
 }

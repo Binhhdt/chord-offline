@@ -23,8 +23,16 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.binh.chordoffline.core.ChordText
+import com.binh.chordoffline.core.LibrarySearch
 import com.binh.chordoffline.core.SaveState
+import com.binh.chordoffline.core.SearchField
+import com.binh.chordoffline.core.SortMode
+import com.binh.chordoffline.core.Transpose
+import com.binh.chordoffline.core.TransposeState
 import com.binh.chordoffline.core.Version
 
 @Composable
@@ -32,15 +40,39 @@ fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version
     val songs by vm.library.collectAsState()
     LaunchedEffect(Unit) { vm.refreshLibrary() }
     var confirmDelete by remember { mutableStateOf<Pair<String, Version?>?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var field by rememberSaveable { mutableStateOf(SearchField.ALL) }
+    var sort by rememberSaveable { mutableStateOf(SortMode.RECENT) }
+    val shown = remember(songs, query, field, sort) { LibrarySearch.filter(songs, query, field, sort) }
 
     if (songs.isEmpty()) {
         Box(modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-            Text("Chưa lưu bài nào. Dùng tab \"Kiểm tra URL\" để tải và lưu.")
+            Text("Chưa lưu bài nào. Dùng tab \"Kiểm tra URL\" hoặc \"Tải nhiều\" để tải và lưu.")
         }
     } else {
         LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(songs, key = { it.key }) { song ->
+            item {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Tìm tên bài, ca sĩ, nhạc sĩ (không cần dấu)") },
+                    trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("✕") } },
+                )
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SearchField.entries.forEach { f -> FilterChip(selected = field == f, onClick = { field = f }, label = { Text(f.label) }) }
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Sắp xếp:", style = MaterialTheme.typography.bodySmall)
+                    SortMode.entries.forEach { m -> FilterChip(selected = sort == m, onClick = { sort = m }, label = { Text(m.label) }) }
+                }
+                Text("${shown.size}/${songs.size} bài · mở offline, không cần mạng", style = MaterialTheme.typography.labelSmall)
+            }
+            if (shown.isEmpty()) item { Text("Không có bài nào khớp \"$query\".") }
+            items(shown, key = { it.key }) { song ->
                 SectionCard(song.title) {
+                    val info = listOfNotNull(song.singers?.let { "Ca sĩ: $it" }, song.composers?.let { "Nhạc sĩ: $it" },
+                        song.tone?.let { "Tone: $it" })
+                    if (info.isNotEmpty()) Text(info.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                     song.sourceUrl?.let { Text("Nguồn: $it", style = MaterialTheme.typography.labelSmall) }
                     listOf(Version.COMPACT to song.compact, Version.PAGE to song.page).forEach { (ver, st) ->
                         Spacer(Modifier.height(4.dp))
@@ -68,6 +100,12 @@ fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version
     }
 }
 
+/** Lưu trạng thái chuyển tone qua xoay màn hình: [steps, lịch sử...]. */
+private val TransposeSaver = Saver<TransposeState, ArrayList<Int>>(
+    save = { ArrayList(listOf(it.steps) + it.history) },
+    restore = { TransposeState(it.first(), it.drop(1)) },
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
@@ -75,6 +113,7 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     LaunchedEffect(key) { text = vm.load(key, Version.COMPACT) ?: "" }
     var chordsAbove by remember { mutableStateOf(false) }
     var size by remember { mutableFloatStateOf(16f) }
+    var tr by rememberSaveable(key, stateSaver = TransposeSaver) { mutableStateOf(TransposeState()) }
     val doc = text?.let { ChordText.parseChordPro(it) }
 
     Scaffold(topBar = {
@@ -85,9 +124,26 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     }) { pad ->
         if (doc == null) { Box(Modifier.padding(pad).fillMaxSize()) { CircularProgressIndicator(Modifier.align(Alignment.Center)) }; return@Scaffold }
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            // Chuyển tone chỉ đổi phần hiển thị; file .cho gốc không bị sửa.
+            val origKey = doc.meta["key"]
+            val flats = remember(doc.body, origKey, tr.steps) { Transpose.preferFlats(origKey, tr.steps, doc.body) }
+            val body = remember(doc.body, tr.steps, flats) { Transpose.text(doc.body, tr.steps, flats) }
+            val keyLabel = when {
+                origKey == null -> if (tr.steps == 0) "gốc" else tr.label
+                tr.steps == 0 -> "$origKey (gốc)"
+                else -> "$origKey → ${Transpose.key(origKey, tr.steps)} (${tr.label})"
+            }
             doc.meta["composer"]?.let { Text("Sáng tác: $it", style = MaterialTheme.typography.bodySmall) }
-            Text(listOfNotNull(doc.meta["key"]?.let { "Tone: $it" }, doc.meta["rhythm"]?.let { "Điệu: $it" },
+            Text(listOfNotNull(doc.meta["rhythm"]?.let { "Điệu: $it" },
                 doc.meta["singer_tones"]?.let { "Tone ca sĩ: $it" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Tone: $keyLabel", fontWeight = FontWeight.SemiBold)
+                OutlinedButton(onClick = { tr = tr.down() }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("−½") }
+                OutlinedButton(onClick = { tr = tr.up() }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("+½") }
+                TextButton(onClick = { tr = tr.undo() }, enabled = tr.canUndo) { Text("Hoàn tác") }
+                TextButton(onClick = { tr = tr.reset() }, enabled = tr.steps != 0) { Text("Về gốc") }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = !chordsAbove, onClick = { chordsAbove = false }, label = { Text("Inline") })
                 FilterChip(selected = chordsAbove, onClick = { chordsAbove = true }, label = { Text("Hợp âm phía trên") })
@@ -101,12 +157,12 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                 if (!chordsAbove) {
                     Text(buildAnnotatedString {
                         var last = 0
-                        ChordText.CHORD.findAll(doc.body).forEach { m ->
-                            append(doc.body.substring(last, m.range.first))
+                        ChordText.CHORD.findAll(body).forEach { m ->
+                            append(body.substring(last, m.range.first))
                             withStyle(SpanStyle(color = chordColor, fontWeight = FontWeight.Bold)) { append(m.value) }
                             last = m.range.last + 1
                         }
-                        append(doc.body.substring(last))
+                        append(body.substring(last))
                     }, fontSize = size.sp, lineHeight = (size * 1.5f).sp)
                 } else {
                     // Ngắt dòng theo số cột vừa màn hình, giữ hợp âm thẳng cột với chữ (font monospace).
@@ -117,7 +173,7 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                         val charPx = remember(size) { measurer.measure("MMMMMMMMMM", mono).size.width / 10f }
                         val cols = with(density) { (maxWidth.toPx() / charPx).toInt() }.coerceAtLeast(12)
                         Column {
-                            doc.body.lines().forEach { line ->
+                            body.lines().forEach { line ->
                                 ChordText.wrapAbove(line, cols).forEach { (c, l) ->
                                     if (c.isNotEmpty()) Text(c, style = mono, color = chordColor,
                                         fontWeight = FontWeight.Bold, softWrap = false, maxLines = 1)

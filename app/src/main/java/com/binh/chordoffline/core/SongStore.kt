@@ -27,7 +27,13 @@ data class SavedSong(
     val sourceUrl: String?,
     val page: VersionStatus,
     val compact: VersionStatus,
-)
+    /** Dùng cho tìm kiếm/sắp xếp; có thể null với bài lưu từ bản cũ chưa có thông tin này. */
+    val composers: String? = null,
+    val singers: String? = null,
+    val tone: String? = null,
+) {
+    val lastSavedMillis: Long get() = maxOf(page.savedAtMillis ?: 0, compact.savedAtMillis ?: 0)
+}
 
 /** Thông tin phản hồi HTTP được lưu kèm bản nguyên trang (không có cookie/header nhạy cảm). */
 data class FetchMeta(
@@ -54,10 +60,11 @@ class SongStore(private val root: File) {
 
     private fun dir(key: String) = File(root, key)
 
-    fun savePage(key: String, title: String?, html: String, meta: FetchMeta): VersionStatus = guarded(key, Version.PAGE) {
+    fun savePage(key: String, title: String?, html: String, meta: FetchMeta, song: ParsedSong? = null): VersionStatus = guarded(key, Version.PAGE) {
         val bytes = html.toByteArray(Charsets.UTF_8)
         writeAtomic(File(dir(key), Version.PAGE.dataFile), bytes)
         writeInfo(key, title, meta.finalUrl)
+        song?.let { writeSearchInfo(key, it) }
         writeProps(key, Version.PAGE, mapOf(
             "state" to SaveState.SAVED.name,
             "savedAt" to System.currentTimeMillis().toString(),
@@ -75,6 +82,7 @@ class SongStore(private val root: File) {
         val bytes = chordPro.toByteArray(Charsets.UTF_8)
         writeAtomic(File(dir(key), Version.COMPACT.dataFile), bytes)
         writeInfo(key, song.title, song.sourceUrl)
+        writeSearchInfo(key, song)
         writeProps(key, Version.COMPACT, mapOf(
             "state" to SaveState.SAVED.name,
             "savedAt" to System.currentTimeMillis().toString(),
@@ -115,8 +123,28 @@ class SongStore(private val root: File) {
         val compact = status(key, Version.COMPACT)
         if (page.state == SaveState.NOT_SAVED && compact.state == SaveState.NOT_SAVED) return@mapNotNull null
         val info = readPropsFile(File(d, "info.properties"))
-        SavedSong(key, info["title"]?.ifBlank { null } ?: key, info["sourceUrl"]?.ifBlank { null }, page, compact)
-    }.sortedByDescending { maxOf(it.page.savedAtMillis ?: 0, it.compact.savedAtMillis ?: 0) }
+        // Bài lưu bằng bản cũ chưa có composer/singers trong info -> đọc từ phần đầu file .cho
+        val cho = if (info["composer"] == null && compact.state == SaveState.SAVED)
+            runCatching { ChordText.parseChordPro(File(d, Version.COMPACT.dataFile).readText()).meta }.getOrNull() else null
+        SavedSong(
+            key, info["title"]?.ifBlank { null } ?: cho?.get("title") ?: key, info["sourceUrl"]?.ifBlank { null }, page, compact,
+            composers = (info["composer"] ?: cho?.get("composer"))?.ifBlank { null },
+            singers = (info["singers"] ?: cho?.get("singer_tones")?.let(::singerNames))?.ifBlank { null },
+            tone = (info["key"] ?: cho?.get("key"))?.ifBlank { null },
+        )
+    }.sortedByDescending { it.lastSavedMillis }
+
+    private fun singerNames(singerTones: String) =
+        singerTones.split(";").map { it.trim().substringBeforeLast(":").trim() }.filter { it.isNotEmpty() }.joinToString(", ")
+
+    private fun writeSearchInfo(key: String, song: ParsedSong) {
+        val f = File(dir(key), "info.properties")
+        writePropsFile(f, readPropsFile(f) + mapOf(
+            "composer" to song.composers.joinToString(", "),
+            "singers" to song.singerTones.joinToString(", ") { it.first },
+            "key" to (song.tone ?: ""),
+        ))
+    }
 
     fun read(key: String, v: Version): String? = File(dir(key), v.dataFile).takeIf { it.exists() }?.readText(Charsets.UTF_8)
 
