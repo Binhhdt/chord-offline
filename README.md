@@ -5,6 +5,7 @@ App Android nhỏ dùng để **kiểm tra thực tế trên điện thoại**:
 - nếu có thì lưu bản offline cho mục đích cá nhân.
 
 Từ v0.2.0 app có thêm: hợp âm phía trên tự xuống dòng, chuyển tone, tìm kiếm bài đã lưu và tải nhiều URL (xem mục **Tính năng v0.2.0**).
+Từ v0.4.0: **chữ ký APK cố định** (cài đè không mất dữ liệu), tìm kiếm có gợi ý kiểu website, tone ca sĩ kèm ảnh video YouTube, thư mục lưu file ngoài app (xem mục **Tính năng v0.4.0**).
 Từ v0.3.0 app **lấy được danh sách bài từ trang danh mục** để xem trước và chọn, có nhập file TXT, và không tải lại bài đã lưu (xem mục **Tính năng v0.3.0**).
 
 ## Tình trạng kiểm chứng (16/10/2026)
@@ -18,6 +19,7 @@ Từ v0.3.0 app **lấy được danh sách bài từ trang danh mục** để x
 | Lưu 2 bản độc lập | ✅ Lưu nguyên trang (358,5 KB) và bản gọn (1,8 KB), trạng thái riêng từng bản |
 | Biên dịch APK (Compose UI) | ✅ GitHub Actions build thành công |
 | Hợp âm phía trên (v0.1.3, trên điện thoại) | ✅ Hiển thị đúng với bài *Người dưng* (ảnh chụp ngày 16/10). Phiên bản v0.2.0 viết lại cách ngắt dòng, **chưa kiểm tra lại trên máy** |
+| v0.4.0: chữ ký cố định, tìm kiếm gợi ý, tone ca sĩ + YouTube, thư mục lưu file | ✅ 55 unit test trên JVM và CI đều đạt; build thành công; CI kiểm tra chữ ký SHA-256 khớp keystore cố định. Phần đọc ca sĩ chạy đúng trên HTML thật (*Người dưng*: Jack - J97, Bm, video `vLa5jvCJMGk`). ⏳ **Chưa kiểm tra trên điện thoại** |
 | Lấy danh sách từ trang danh mục (v0.3.0) | ✅ Unit test trên JVM và CI đều đạt; build APK thành công. Parser đã chạy thử trên HTML thật của trang bài hát (cùng khung với trang danh mục): loại đúng 7 link ở cột bên `aside`. ⏳ **Chưa quét thử trang danh mục thật trên điện thoại** |
 | Chuyển tone, tìm kiếm, tải nhiều (v0.2.0) | ✅ Unit test trên JVM và CI đều đạt; build APK thành công. ⏳ **Chưa kiểm tra trên điện thoại** |
 | So sánh HTML server với bản lưu từ trình duyệt (v0.1.3, *Người dưng*, cùng bài W8IUDI0D) | ✅ Lời **giống hệt** (53 dòng, 64 hợp âm). Server 296,4 KB, 510 ms |
@@ -63,12 +65,15 @@ app/src/main/java/com/binh/chordoffline/
 │   ├── Transpose.kt      # chuyển tone theo bán cung + TransposeState (hoàn tác)
 │   ├── LibrarySearch.kt  # tìm kiếm không dấu, sắp xếp
 │   ├── BatchQueue.kt     # hàng đợi tải nhiều: thêm/bỏ trùng/trạng thái/lưu ra file
+│   ├── SingerExtractor.kt # ca sĩ + tone + mã video YouTube
 │   └── ListingParser.kt  # lấy link bài từ trang danh mục + ListingPolicy + Discovery (giới hạn trang, chống vòng lặp)
 ├── net/HttpFetcher.kt    # OkHttp: status, URL sau redirect, Content-Type, kích thước, thời gian
+├── ui/StorageBackup.kt   # thư mục lưu file (SAF): sao lưu / khôi phục
 ├── ui/                   # Compose: Kiểm tra URL, Đã lưu (tìm kiếm), Tải nhiều, trình xem (chuyển tone)
 └── MainActivity.kt
 app/src/test/.../core/        # unit test, dùng HTML/lời giả (không chứa nội dung có bản quyền)
-    CoreTest, ChordWrapTest, TransposeTest, LibraryAndBatchTest, ListingTest, RegexAndroidCompatTest
+    CoreTest, ChordWrapTest, TransposeTest, LibraryAndBatchTest, ListingTest, SingerAndBackupTest, RegexAndroidCompatTest
+keystore/debug.keystore       # chữ ký cố định — KHÔNG xoá/đổi
 ```
 
 ### Hai chế độ lưu
@@ -123,6 +128,46 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
    - **Bỏ mục xong** và **Xoá hết**.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
+
+## Tính năng v0.4.0
+
+### Chữ ký APK cố định (cài đè không mất dữ liệu)
+- Android chỉ cho cài bản mới đè lên bản cũ khi **cùng chữ ký**. Trước v0.4.0, mỗi lần GitHub Actions build lại tạo một khoá debug ngẫu nhiên, nên muốn cài bản mới phải gỡ app, và dữ liệu bị mất.
+- Từ v0.4.0, mọi bản build đều ký bằng `keystore/debug.keystore` đã commit trong repo:
+  - alias `androiddebugkey`, mật khẩu chuẩn `android`;
+  - SHA-256 `92:54:BD:BA:E6:B9:9D:F0:73:C9:59:56:1F:10:35:43:FD:9C:C2:BF:48:C5:14:14:E0:30:51:F3:04:78:B5:D2`.
+- CI có bước **"Kiểm tra chữ ký cố định"**: build sẽ báo lỗi nếu APK không ký bằng khoá này.
+- **Lần chuyển sang v0.4.0 vẫn phải gỡ bản cũ đúng một lần**, vì bản cũ ký bằng khoá khác. Từ v0.4.0 trở đi chỉ cần cài đè.
+- Keystore nằm trong repo **private**. Không xoá hay đổi file này: nếu mất, các bản sau sẽ không cài đè lên được nữa. Nên giữ thêm một bản sao ở nơi khác.
+
+### Tìm kiếm kiểu website (tab Đã lưu)
+- Ô tìm kiếm có 🔍, nút 🎤 nói để tìm (dùng nhận giọng nói tiếng Việt của máy), ✕ để xoá, và nút **Tìm**.
+- Khi gõ, app hiện tối đa **6 gợi ý**: 🎵 tên bài và ♪ ca sĩ (hoặc nhạc sĩ). Thứ tự ưu tiên: tên bài bắt đầu bằng từ đang gõ, rồi tên bài có chứa từ đó, rồi khớp ca sĩ hoặc nhạc sĩ. Không cần gõ dấu.
+- Bấm vào một gợi ý để **mở bài ngay, offline**. Bấm **"Xem tất cả kết quả cho …"** (hoặc nút Tìm, phím tìm trên bàn phím) để lọc cả danh sách.
+- Tìm kiếm chỉ chạy trên **các bài đã lưu trong máy**. App không gọi trang tìm kiếm của website, vì robots.txt của Hợp Âm Việt chặn `/chord/search`.
+
+### Tone ca sĩ kèm video YouTube
+- **Cách app đọc dữ liệu:** trên trang bài hát, mỗi ca sĩ là một mục `#song-item-N`, gồm tên, tone và `data-play-id`. Server chỉ render sẵn ảnh của **video đầu tiên** (`#main_player`). App tìm thêm mã video trong thuộc tính HTML và trong script gần `data-play-id`. Nếu video của ca sĩ nào chỉ được nạp bằng JavaScript, app hiển thị ca sĩ đó **không có ảnh**, không tự bịa ra video.
+- **Khi lưu bài**, app tải thêm ảnh thu nhỏ khoảng 10 KB từ `img.youtube.com` và lưu vào `yt_<mã>.jpg`. Nhờ vậy khi **offline vẫn thấy ảnh**, để nhận biết ca sĩ nam hay nữ.
+- **Trong trình xem bản gọn**, mục "Tone ca sĩ" có:
+  - ảnh video, bấm vào để mở YouTube (**cần có mạng**);
+  - tên và tone của ca sĩ;
+  - nút **"Dùng tone này"**: chuyển hợp âm sang tone ca sĩ, ví dụ Am → Bm (+2), và vẫn hoàn tác được.
+- Bài lưu bằng bản cũ vẫn hiện tên và tone ca sĩ, nhưng không có ảnh. Muốn có ảnh thì lưu lại bài đó.
+- Tab Kiểm tra URL có thêm dòng **"Ca sĩ / video"**, cho biết số ca sĩ và số ca sĩ có video tìm được trong HTML server.
+
+### Thư mục lưu file (tab Đã lưu → 📁)
+- Chọn một thư mục, ví dụ `Download/HopAm`. App chép mỗi bài vào `<thư mục>/ChordOffline/<mã bài>/`, gồm `song.cho`, `page.html`, `info.properties`, các file trạng thái và ảnh `yt_*.jpg`.
+- Các nút: **Sao lưu tất cả** (chỉ ghi file mới hoặc đã thay đổi), **Tự sao lưu sau mỗi lần lưu** (bật sẵn), **Khôi phục** (chép các bài từ thư mục vào app, giữ nguyên bài đang có).
+- Bản sao trong thư mục này **vẫn còn khi gỡ app**: cài lại, chọn lại đúng thư mục rồi bấm Khôi phục. Khi khôi phục, app chỉ nhận đúng các tên file nó tự tạo và từ chối đường dẫn `../`.
+- Đây là bản sao cá nhân trên máy bạn. Theo điều khoản của website, đừng chia sẻ thư mục này ra ngoài.
+
+### Kiểm tra v0.4.0 trên điện thoại
+1. **Lần này**: nếu còn bài muốn giữ, hãy chép lại danh sách link trước. Sau đó gỡ bản cũ và cài v0.4.0.
+2. Vào tab Đã lưu → 📁 → **Chọn thư mục**, bật tự sao lưu. Lưu thử bài *Người dưng*, rồi mở trình quản lý file kiểm tra đã có `ChordOffline/W8IUDI0D/`.
+3. Mở bản gọn của *Người dưng*: mục Tone ca sĩ phải có ảnh video của Jack - J97 và tone Bm. Bật chế độ máy bay, ảnh vẫn phải hiện. Bấm "Dùng tone này", tone phải hiện `Am → Bm (+2)`.
+4. Gõ `nguoi` vào ô tìm kiếm: phải có gợi ý, bấm vào là mở được bài. Bấm "Xem tất cả kết quả" để lọc cả danh sách.
+5. Cài đè một bản build mới hơn (lần push sau): **không cần gỡ app**, dữ liệu vẫn còn.
 
 ## Tính năng v0.3.0: lấy danh sách từ trang danh mục
 
