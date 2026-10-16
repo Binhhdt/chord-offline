@@ -131,4 +131,30 @@ Dòng ba không hợp âm
             assertNotNull(failed.error)
         } finally { dir.deleteRecursively() }
     }
+
+    @Test fun wrapAboveKeepsAlignment() {
+        val line = "[Am] Vì lỡ thương nhau nên [Dm] đôi mình đành đau [C] khổ"
+        val parts = ChordText.wrapAbove(line, 20)
+        assertTrue(parts.size > 1)
+        parts.forEach { (c, l) -> assertTrue("quá rộng: $c | $l", c.length <= 20 && l.length <= 20) }
+        // ghép lại: mỗi hợp âm phải nằm đúng trên chữ như khi chưa ngắt
+        val (c0, l0) = ChordText.splitAbove(line)
+        fun chordAt(c: String, l: String) = Regex("""\S+""").findAll(c).map { it.value to l.drop(it.range.first).take(2) }.toList()
+        val expected = chordAt(c0, l0)
+        val actual = parts.flatMap { (c, l) -> chordAt(c, l) }
+        assertEquals(expected, actual)
+        assertEquals(l0.split(' ').filter { it.isNotEmpty() }, parts.flatMap { it.second.split(' ') }.filter { it.isNotEmpty() })
+    }
+
+    @Test fun wrapAboveShortLineUnchanged() {
+        assertEquals(listOf(ChordText.splitAbove("[C] ngắn")), ChordText.wrapAbove("[C] ngắn", 40))
+        assertEquals(listOf("" to "dòng thường"), ChordText.wrapAbove("dòng thường", 40))
+    }
+
+    @Test fun comparisonFlagsDifferentSongs() {
+        val other = serverLike.replace("ABCD1234", "ZZZZ9999").replace("Bài mẫu", "Bài khác")
+        val r = HtmlComparison.compare(serverLike, other)
+        assertEquals(false, r.sameSong)
+        assertEquals(true, HtmlComparison.compare(serverLike, serverLike).sameSong)
+    }
 }

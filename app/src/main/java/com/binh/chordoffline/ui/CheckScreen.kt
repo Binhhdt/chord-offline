@@ -142,6 +142,17 @@ fun CheckScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
 
 @Composable
 private fun ComparisonView(r: ComparisonReport) {
+    if (r.sameSong == false) {
+        Text(
+            "⚠️ Hai file là HAI BÀI KHÁC NHAU — server: ${r.serverSong}, bản lưu: ${r.savedSong}. " +
+                "Kết quả dưới đây không dùng để kết luận được. Hãy chọn file HTML lưu từ trình duyệt của CÙNG bài, " +
+                "hoặc nhập URL của bài trong file đã lưu rồi tải lại.",
+            color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(6.dp))
+    } else if (r.sameSong == true) {
+        Text("✓ Cùng một bài: ${r.serverSong}", style = MaterialTheme.typography.bodySmall)
+    }
     KV("Kích thước", "server ${r.serverBytes / 1024} KB · bản lưu ${r.savedBytes / 1024} KB")
     KV("Lời giống hệt", when (r.lyricsIdentical) { true -> "Có (${r.serverLyricLines} dòng)"; false -> "Khác (server ${r.serverLyricLines} / lưu ${r.savedLyricLines} dòng)"; null -> "Không so được (một bên thiếu lời)" })
     Presence.entries.forEach { pr ->

@@ -67,6 +67,11 @@ data class ComparisonReport(
     val savedLyricLines: Int,
     val serverBytes: Int,
     val savedBytes: Int,
+    /** Tên bài + mã bài (từ canonical) của hai bên, để phát hiện so sánh nhầm hai bài khác nhau. */
+    val serverSong: String,
+    val savedSong: String,
+    /** false = hai file là hai bài khác nhau → kết quả so sánh không có ý nghĩa. null = không xác định được. */
+    val sameSong: Boolean?,
 )
 
 /**
@@ -123,6 +128,15 @@ object HtmlComparison {
         }
         val sl = SongParser.extractLyrics(s)
         val vl = SongParser.extractLyrics(v)
+        val sp = SongParser.parse(s)
+        val vp = SongParser.parse(v)
+        val sameSong = when {
+            sp.slugId != null && vp.slugId != null -> sp.slugId == vp.slugId
+            sp.songId != null && vp.songId != null -> sp.songId == vp.songId
+            sp.title != null && vp.title != null -> sp.title == vp.title
+            else -> null
+        }
+        fun label(p: ParsedSong) = "${p.title ?: "?"} (${p.slugId ?: p.songId ?: "?"})"
         return ComparisonReport(
             rows = rows,
             lyricsIdentical = if (sl != null && vl != null) sl == vl else null,
@@ -130,6 +144,9 @@ object HtmlComparison {
             savedLyricLines = vl?.lines()?.size ?: 0,
             serverBytes = serverHtml.toByteArray().size,
             savedBytes = savedHtml.toByteArray().size,
+            serverSong = label(sp),
+            savedSong = label(vp),
+            sameSong = sameSong,
         )
     }
 }

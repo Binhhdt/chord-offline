@@ -60,4 +60,31 @@ object ChordText {
         lyric.append(line.substring(pos))
         return chords.toString().trimEnd() to lyric.toString().trimEnd()
     }
+
+    /**
+     * Ngắt một dòng (hợp âm phía trên) thành nhiều dòng vừa [maxCols] cột, giữ hợp âm thẳng cột với chữ.
+     * Ưu tiên ngắt ở khoảng trắng của lời và không cắt ngang tên hợp âm.
+     */
+    fun wrapAbove(line: String, maxCols: Int): List<Pair<String, String>> {
+        val w = maxCols.coerceAtLeast(8)
+        var (c, l) = splitAbove(line)
+        val out = mutableListOf<Pair<String, String>>()
+        while (maxOf(c.length, l.length) > w) {
+            var b = l.lastIndexOf(' ', w).takeIf { it > 0 } ?: w
+            // không cắt ngang tên hợp âm: lùi về đầu hợp âm nếu nó vắt qua điểm ngắt
+            if (b < c.length && b > 0 && c[b] != ' ' && c[b - 1] != ' ') {
+                val start = c.lastIndexOf(' ', b - 1) + 1
+                if (start > 0) b = start
+            }
+            out += c.take(b).trimEnd() to l.take(b).trimEnd()
+            c = c.drop(b); l = l.drop(b)
+            // bỏ khoảng trắng đầu dòng mới, nhưng chỉ bỏ cùng số cột ở cả hai dòng để giữ thẳng hàng
+            val lead = minOf(l.takeWhile { it == ' ' }.length,
+                if (c.isBlank()) Int.MAX_VALUE else c.takeWhile { it == ' ' }.length)
+            if (lead in 1 until Int.MAX_VALUE) { c = c.drop(minOf(lead, c.length)); l = l.drop(lead) }
+            if (c.isBlank()) c = ""
+        }
+        out += c.trimEnd() to l
+        return out
+    }
 }

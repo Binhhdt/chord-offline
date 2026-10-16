@@ -2,7 +2,6 @@ package com.binh.chordoffline.ui
 
 import android.annotation.SuppressLint
 import android.webkit.WebView
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,7 +12,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -107,12 +109,21 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                         append(doc.body.substring(last))
                     }, fontSize = size.sp, lineHeight = (size * 1.5f).sp)
                 } else {
-                    Column(Modifier.horizontalScroll(rememberScrollState())) {
-                        doc.body.lines().forEach { line ->
-                            val (c, l) = ChordText.splitAbove(line)
-                            if (c.isNotEmpty()) Text(c, color = chordColor, fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace, fontSize = size.sp, softWrap = false)
-                            Text(l.ifEmpty { " " }, fontFamily = FontFamily.Monospace, fontSize = size.sp, softWrap = false)
+                    // Ngắt dòng theo số cột vừa màn hình, giữ hợp âm thẳng cột với chữ (font monospace).
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        val measurer = rememberTextMeasurer()
+                        val density = LocalDensity.current
+                        val mono = TextStyle(fontFamily = FontFamily.Monospace, fontSize = size.sp)
+                        val charPx = remember(size) { measurer.measure("MMMMMMMMMM", mono).size.width / 10f }
+                        val cols = with(density) { (maxWidth.toPx() / charPx).toInt() }.coerceAtLeast(12)
+                        Column {
+                            doc.body.lines().forEach { line ->
+                                ChordText.wrapAbove(line, cols).forEach { (c, l) ->
+                                    if (c.isNotEmpty()) Text(c, style = mono, color = chordColor,
+                                        fontWeight = FontWeight.Bold, softWrap = false, maxLines = 1)
+                                    Text(l.ifEmpty { " " }, style = mono, softWrap = false, maxLines = 1)
+                                }
+                            }
                         }
                     }
                 }
@@ -148,9 +159,26 @@ fun PageViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                     settings.blockNetworkLoads = true
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
-                    loadDataWithBaseURL(null, h, "text/html", "utf-8", null)
+                    loadDataWithBaseURL(null, withViewerCss(h), "text/html", "utf-8", null)
                 }
             })
         }
     }
+}
+
+/**
+ * CSS chỉ dùng khi XEM (file đã lưu giữ nguyên): trang gốc dựa vào CSS/JS bên ngoài nên khi offline
+ * icon SVG phình to và lời mất xuống dòng. Thu nhỏ icon, ẩn quảng cáo, giữ xuống dòng của lời.
+ */
+private fun withViewerCss(html: String): String {
+    val css = """<style id="chord-offline-viewer">
+        body{font-family:sans-serif;padding:8px;line-height:1.5}
+        svg,img{max-width:1.4em!important;max-height:1.4em!important;width:auto!important;height:auto!important}
+        ins.adsbygoogle,.ad-container,iframe{display:none!important}
+        #lyricBox{border:1px solid #ccc;border-radius:8px;padding:12px;margin:12px 0}
+        .lyric-version{white-space:pre-wrap;font-size:17px;line-height:1.7}
+        .chord{color:#0B7285;font-weight:bold}
+        </style>"""
+    val i = html.indexOf("</head>", ignoreCase = true)
+    return if (i >= 0) html.substring(0, i) + css + html.substring(i) else css + html
 }
