@@ -4,7 +4,9 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.binh.chordoffline.CrashLog
 import com.binh.chordoffline.core.*
+import com.binh.chordoffline.onBigStack
 import com.binh.chordoffline.net.FetchResult
 import com.binh.chordoffline.net.HttpFetcher
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +36,8 @@ data class CheckState(
     val pageStatus: VersionStatus = VersionStatus.NONE,
     val compactStatus: VersionStatus = VersionStatus.NONE,
     val songKey: String? = null,
+    /** Chi tiết lỗi nội bộ (stack trace) nếu khâu tải/phân tích gặp lỗi. */
+    val errorDetail: String? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -65,6 +69,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val url = s.url.trim()
         _check.update { CheckState(url = it.url, confirmed = it.confirmed, loading = true, savedFileName = null) }
         viewModelScope.launch {
+          try {
             val result = withContext<Triple<RobotsRules, FetchResult?, String?>>(Dispatchers.IO) {
                 val r = robots ?: loadRobots().also { robots = it }
                 val path = UrlPolicy.path(url)
@@ -78,7 +83,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _check.update { it.copy(loading = false, message = blocked, robotsInfo = "robots.txt: ${r.source}") }
                 return@launch
             }
-            val analysis = withContext(Dispatchers.Default) { analyze(fetch) }
+            val analysis = onBigStack("analyze-html") { analyze(fetch) }
             _check.update {
                 it.copy(
                     loading = false,
@@ -92,6 +97,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
             refreshStatuses()
+          } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+          } catch (e: Throwable) {
+            _check.update {
+                it.copy(loading = false, message = "Lỗi nội bộ khi tải/phân tích: ${e.javaClass.simpleName}: ${e.message}",
+                    errorDetail = CrashLog.stackTrace(e))
+            }
+          }
         }
     }
 
@@ -119,17 +132,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (server == null) { _check.update { it.copy(message = "Cần tải trực tiếp thành công trước khi so sánh.") }; return }
         _check.update { it.copy(comparing = true, savedFileName = displayName ?: uri.lastPathSegment) }
         viewModelScope.launch {
-            val report = withContext(Dispatchers.IO) {
-                runCatching {
-                    val saved = getApplication<Application>().contentResolver.openInputStream(uri)!!.use {
+            val report = runCatching {
+                val saved = withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)!!.use {
                         it.readBytes().toString(Charsets.UTF_8)
                     }
-                    HtmlComparison.compare(server, saved)
                 }
+                onBigStack("compare-html") { HtmlComparison.compare(server, saved) }
             }
             _check.update {
                 it.copy(comparing = false, comparison = report.getOrNull(),
-                    message = report.exceptionOrNull()?.let { e -> "Không đọc được file: ${e.message}" })
+                    message = report.exceptionOrNull()?.let { e -> "Không so sánh được: ${e.javaClass.simpleName}: ${e.message}" },
+                    errorDetail = report.exceptionOrNull()?.let { e -> CrashLog.stackTrace(e) })
             }
         }
     }

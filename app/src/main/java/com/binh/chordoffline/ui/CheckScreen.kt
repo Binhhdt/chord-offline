@@ -18,6 +18,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import com.binh.chordoffline.CrashLog
 import com.binh.chordoffline.core.*
 
 @Composable
@@ -33,6 +37,10 @@ fun CheckScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Kiểm tra tải trực tiếp", style = MaterialTheme.typography.titleLarge)
+        var lastCrash by remember { mutableStateOf(CrashLog.read(context)) }
+        lastCrash?.let { log ->
+            ErrorCard("App đã bị lỗi ở lần chạy trước", log, onDismiss = { CrashLog.clear(context); lastCrash = null })
+        }
         OutlinedTextField(
             value = s.url, onValueChange = vm::setUrl, label = { Text("URL trang bài hát") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -51,6 +59,7 @@ fun CheckScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         }
         if (s.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         s.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        s.errorDetail?.let { ErrorCard("Chi tiết lỗi", it, onDismiss = null) }
         s.robotsInfo?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         s.fetch?.let { f ->
@@ -192,3 +201,19 @@ private fun displayName(context: android.content.Context, uri: Uri): String? = r
         if (c.moveToFirst()) c.getString(0) else null
     }
 }.getOrNull()
+
+@Composable
+private fun ErrorCard(title: String, detail: String, onDismiss: (() -> Unit)?) {
+    val clipboard = LocalClipboardManager.current
+    SectionCard(title) {
+        Text("Chụp màn hình hoặc bấm Sao chép rồi gửi nội dung này để sửa lỗi.", style = MaterialTheme.typography.bodySmall)
+        SelectionContainer {
+            Text(detail.take(4000), fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.error)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { clipboard.setText(AnnotatedString(detail)) }) { Text("Sao chép") }
+            if (onDismiss != null) TextButton(onClick = onDismiss) { Text("Đã xem, xoá") }
+        }
+    }
+}
