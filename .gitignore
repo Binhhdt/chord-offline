@@ -1,0 +1,11 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+*.apk
+*.keystore
+# không đưa HTML/lời bài hát tải về vào repo
+*.html
+*.cho
