@@ -129,6 +129,21 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## Tính năng v0.5.0: giao diện "Sân khấu đêm" & màu hợp âm
+
+- **Giao diện mẫu B (đã chọn):**
+  - nền tối `#0E0F12` / `#15171C`, chữ `#EDEAE3`, điểm nhấn hổ phách `#F2A33A`;
+  - font **Be Vietnam Pro** đóng gói sẵn trong app, hỗ trợ đầy đủ tiếng Việt (giấy phép SIL OFL 1.1, xem `app/src/main/assets/licenses/OFL-BeVietnamPro.txt`);
+  - tiêu đề dùng Be Vietnam Pro ExtraBold thay cho Lexend như trong bản thiết kế, vì Lexend chỉ có dạng font biến thể, dễ lỗi trên Android;
+  - nền cửa sổ tối ngay từ khi mở app, không bị nháy trắng.
+- **Icon mới:** cặp ngoặc `[ ]` màu hổ phách bao quanh thế bấm hợp âm. Đây là icon thích ứng (adaptive icon) nên tự khớp với hình dạng icon của máy, kèm bản một màu cho "Biểu tượng theo chủ đề" trên Android 13 trở lên.
+- **Đổi màu hợp âm** (trình xem bản gọn → nút **● Màu**):
+  - 10 màu có sẵn: Hổ phách, Vàng chanh, Cam đào, Đỏ san hô, Hồng, Tím, Xanh dương, Xanh ngọc, Xanh lá, Trắng. Có test kiểm tra tất cả đều đạt tương phản ≥ 4.5:1 trên nền tối;
+  - nhập mã màu tuỳ chỉnh `#RRGGBB`; nếu màu quá tối, app cảnh báo tỉ lệ tương phản;
+  - tuỳ chọn **tô nền mờ sau hợp âm**;
+  - nút **Mặc định** để quay về màu hổ phách;
+  - màu được lưu cho mọi bài, áp dụng cho chế độ Inline, Hợp âm phía trên và cả khi xem Nguyên trang. Chỉ đổi phần hiển thị, file đã lưu không bị sửa.
+
 ## Tính năng v0.4.0
 
 ### Chữ ký APK cố định (cài đè không mất dữ liệu)
