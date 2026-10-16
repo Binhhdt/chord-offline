@@ -10,6 +10,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.binh.chordoffline.core.Version
@@ -43,16 +53,23 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
     val view = LocalView.current
     DisposableEffect(busy) { view.keepScreenOn = busy; onDispose { view.keepScreenOn = false } }
 
-    val v = viewing
-    if (v != null) {
-        BackHandler { viewing = null }
-        when (v.version) {
-            Version.COMPACT -> CompactViewer(vm, v.key, onBack = { viewing = null })
-            Version.PAGE -> PageViewer(vm, v.key, onBack = { viewing = null })
+    // Xin quyền thông báo (Android 13+) để hiện tiến độ khi tải chạy nền
+    val ctx = LocalContext.current
+    var askedNotif by rememberSaveable { mutableStateOf(false) }
+    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(busy) {
+        if (busy && !askedNotif && Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            askedNotif = true
+            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        return
     }
 
+    val focus = LocalFocusManager.current
+    val open: (String, Version) -> Unit = { key, ver -> focus.clearFocus(); viewing = Viewing(key, ver) }
+
+    // Trình xem mở CHỒNG LÊN danh sách (không thay thế) -> quay lại vẫn giữ từ khoá tìm kiếm, gợi ý, vị trí cuộn.
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -67,9 +84,21 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
     ) { padding ->
         val m = Modifier.padding(padding)
         when (tab) {
-            0 -> CheckScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
-            1 -> LibraryScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
-            else -> BatchScreen(vm, m, onOpen = { key, ver -> viewing = Viewing(key, ver) })
+            0 -> CheckScreen(vm, m, onOpen = open)
+            1 -> LibraryScreen(vm, m, onOpen = open)
+            else -> BatchScreen(vm, m, onOpen = open)
         }
+    }
+
+    val v = viewing
+    if (v != null) {
+        BackHandler { viewing = null }
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when (v.version) {
+                Version.COMPACT -> CompactViewer(vm, v.key, onBack = { viewing = null })
+                Version.PAGE -> PageViewer(vm, v.key, onBack = { viewing = null })
+            }
+        }
+    }
     }
 }

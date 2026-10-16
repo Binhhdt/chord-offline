@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.binh.chordoffline.CrashLog
+import com.binh.chordoffline.DownloadService
 import com.binh.chordoffline.core.*
 import com.binh.chordoffline.onBigStack
 import com.binh.chordoffline.net.FetchResult
@@ -141,6 +142,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _chordStyle.update { it.copy(highlight = v) }
         displayPrefs.edit().putBoolean("chord_highlight", v).apply()
     }
+
+    // ---------- Khoảng nghỉ giữa các request (người dùng chọn, thấp nhất 1 giây; website chậm thì tự nghỉ lâu hơn) ----------
+    private val _delayMs = MutableStateFlow(PacePolicy.clamp(displayPrefs.getLong("batch_delay_ms", PacePolicy.DEFAULT)))
+    val delayMs: StateFlow<Long> = _delayMs
+    @Volatile private var lastResponseMs = 0L
+    fun setDelay(ms: Long) { val v = PacePolicy.clamp(ms); _delayMs.value = v; displayPrefs.edit().putLong("batch_delay_ms", v).apply() }
+    private fun pace(): Long = PacePolicy.effectiveDelay(_delayMs.value, lastResponseMs)
     private val _storage = MutableStateFlow(StorageUi())
     val storage: StateFlow<StorageUi> = _storage
 
@@ -375,7 +383,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // nghỉ giữa các request (tính cả request robots.txt và tab Kiểm tra URL)
                 while (true) {
                     if (_batch.value.pauseRequested) break
-                    val wait = BATCH_DELAY_MS - (System.currentTimeMillis() - lastRequestAt)
+                    val wait = pace() - (System.currentTimeMillis() - lastRequestAt)
                     if (wait <= 0) break
                     _batch.update { it.copy(waitSeconds = ((wait + 999) / 1000).toInt(), currentUrl = null) }
                     delay(minOf(wait, 250L))
@@ -421,13 +429,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val r = robots ?: withContext(Dispatchers.IO) { loadRobots() }.also {
             robots = it
-            delay(BATCH_DELAY_MS)   // giữ khoảng nghỉ giữa request robots.txt và request bài hát
+            delay(pace())   // giữ khoảng nghỉ giữa request robots.txt và request bài hát
         }
         val path = UrlPolicy.path(url)
         if (!r.isAllowed(path)) return BatchOutcome(false, null, null, "robots.txt không cho phép $path", false)
 
         lastRequestAt = System.currentTimeMillis()
         val f = withContext(Dispatchers.IO) { fetcher.fetch(url) }
+        lastResponseMs = f.elapsedMs
         lastRequestAt = System.currentTimeMillis()
         coroutineContext.ensureActive()   // đã huỷ trong lúc tải -> không lưu gì
 
@@ -495,6 +504,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var discoverNext: String? = null
 
     init { setDiscoverUrl(_discover.value.url) }
+
+    /**
+     * Khi đang quét/tải/tự động: chạy dịch vụ tiền cảnh + thông báo tiến độ (tắt màn hình vẫn tải tiếp).
+     * Cập nhật thông báo tối đa mỗi giây; hết việc thì tắt dịch vụ.
+     */
+    private fun observeForeground() {
+        val ctx = getApplication<Application>()
+        var lastShown = 0L
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(_batch, _discover, _auto, _delayMs) { b, d, a, ms -> listOf(b, d, a, ms) }.collect { l ->
+                val b = l[0] as BatchUi; val d = l[1] as DiscoverUi; val a = l[2] as AutoUi; val ms = l[3] as Long
+                val busy = b.running || d.running || a.active
+                if (!busy) { DownloadService.stop(ctx); return@collect }
+                val now = System.currentTimeMillis()
+                if (DownloadService.running && now - lastShown < 1000) return@collect
+                lastShown = now
+                val q = b.queue
+                val left = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING)
+                val title = when {
+                    a.active -> "Tự động · vòng ${a.round}"
+                    d.running -> "Đang quét danh mục"
+                    else -> "Đang tải ${q.finished}/${q.total}"
+                }
+                val text = when {
+                    d.running -> "Trang ${d.lastScanned}${d.totalPages?.let { "/$it" } ?: ""} · ${d.items.size} bài tìm thấy"
+                    else -> "✅ ${q.count(ItemState.DONE)}  ❌ ${q.count(ItemState.ERROR)}  ⏳ $left · còn ~${PacePolicy.etaMinutes(left, ms)} phút"
+                } + if (a.active) " · đã thêm ${a.totalQueued} bài" else ""
+                DownloadService.show(ctx, title, text, q.finished, if (d.running) 0 else q.total)
+            }
+        }
+    }
     fun setDiscoverPages(n: Int) = _discover.update { it.copy(maxPages = n.coerceIn(1, ListingPolicy.MAX_PAGES_LIMIT)) }
 
     fun discoverStart() {
@@ -615,7 +655,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun waitForSlot(onWait: (Int) -> Unit) {
         while (true) {
-            val wait = BATCH_DELAY_MS - (System.currentTimeMillis() - lastRequestAt)
+            val wait = pace() - (System.currentTimeMillis() - lastRequestAt)
             if (wait <= 0) return
             onWait(((wait + 999) / 1000).toInt())
             delay(minOf(wait, 250L))
@@ -640,6 +680,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _discover.update { it.copy(waitSeconds = 0, currentPage = cur) }
                 lastRequestAt = System.currentTimeMillis()
                 val f = withContext(Dispatchers.IO) { fetcher.fetch(cur) }
+                lastResponseMs = f.elapsedMs
                 lastRequestAt = System.currentTimeMillis()
                 val pageNo = ListingPolicy.pageIndex(cur) + 1
                 if (BatchQueue.isBlockingResponse(f.status, f.body)) {
@@ -823,10 +864,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun thumbFile(key: String, youtubeId: String): File? = store.thumbFile(key, youtubeId).takeIf { it.exists() && it.length() > 0 }
 
     override fun onCleared() {
+        DownloadService.stop(getApplication())
         // ViewModel bị huỷ (thoát app): mục đang tải quay về "Chờ" để lần sau tiếp tục.
         if (_batch.value.running) setQueue { it.recoverAfterRestart() }
         super.onCleared()
     }
+
+    // Đặt ở CUỐI class: mọi StateFlow (_batch, _discover, _auto, _delayMs) đã được khởi tạo xong.
+    init { observeForeground() }
 
     companion object {
         const val BATCH_DELAY_MS = 3_000L

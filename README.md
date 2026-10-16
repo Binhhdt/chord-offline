@@ -129,6 +129,25 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.7.0: quay lại giữ trang tìm kiếm, chọn khoảng nghỉ, tải chạy nền
+
+- **Sửa lỗi nút quay lại:**
+  - **Lỗi cũ:** khi mở một bài từ kết quả tìm kiếm rồi bấm ← (hoặc phím Back), app quay về danh sách từ đầu, mất từ khoá tìm kiếm, gợi ý và vị trí đang cuộn.
+  - **Đã sửa:** giờ trình xem mở chồng lên trên danh sách, nên khi quay lại, từ khoá, gợi ý, bộ lọc và vị trí cuộn vẫn giữ nguyên. Áp dụng cho cả 3 tab.
+- **Chọn khoảng nghỉ giữa các bài** (tab Tải nhiều → Kiểu lưu):
+  - có các mức **3 / 2 / 1,5 / 1 giây**, mặc định 2 giây, thấp nhất 1 giây;
+  - vẫn tải tuần tự, không tải song song;
+  - website trả lời chậm thì app tự nghỉ bằng thời gian trả lời đó, tối đa 10 giây;
+  - gặp 429/503 thì vẫn tự dừng như trước;
+  - thời gian còn lại ước tính được tính theo khoảng nghỉ đã chọn. Ví dụ 341 bài: 3 giây ≈ 21 phút, 2 giây ≈ 15 phút, 1 giây ≈ 10 phút.
+- **Tải chạy nền:**
+  - khi đang quét, tải hoặc chạy tự động, app bật một **dịch vụ tiền cảnh** có thông báo tiến độ (ví dụ "Đang tải 444/785 · ✅443 ❌1 ⏳341 · còn ~15 phút");
+  - tắt màn hình hoặc chuyển sang app khác vẫn tải tiếp; bấm vào thông báo để mở lại app;
+  - app giữ CPU hoạt động khi tắt màn hình, tối đa 10 giờ;
+  - lần đầu chạy, Android 13+ sẽ hỏi quyền hiện thông báo;
+  - vuốt tắt app khỏi danh sách đa nhiệm thì dừng tải, nhưng hàng đợi và tiến độ vẫn được lưu để tải tiếp.
+  - Android 15 giới hạn thời gian chạy của loại dịch vụ này. Khi hết giờ, app dừng và vẫn lưu trạng thái; mở app rồi bấm Tiếp tục.
+
 ## v0.6.1: tự động quét & tải đến hết
 
 - Tab Tải nhiều → Từ trang danh mục có nút **"▶ Tự động quét & tải đến hết (từ trang X)"**. App tự lặp các bước sau:

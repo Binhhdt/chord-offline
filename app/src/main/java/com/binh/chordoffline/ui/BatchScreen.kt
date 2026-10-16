@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.binh.chordoffline.core.BatchItem
 import com.binh.chordoffline.core.ItemState
 import com.binh.chordoffline.core.ListingPolicy
+import com.binh.chordoffline.core.PacePolicy
 import com.binh.chordoffline.core.ScanProgressBook
 import com.binh.chordoffline.core.Version
 
@@ -56,7 +57,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         if (q.total > 0) stickyHeader(key = "mini-progress") { MiniProgress(vm, b, check.confirmed) }
         item {
             Text("Tải nhiều bài", style = MaterialTheme.typography.titleLarge)
-            Text("Tải tuần tự, nghỉ ${AppViewModel.BATCH_DELAY_MS / 1000} giây giữa các request. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
+            Text("Tải tuần tự, nghỉ ${PacePolicy.label(vm.delayMs.collectAsState().value)} giữa các request. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
                 "thì tự dừng — app không vượt CAPTCHA, đăng nhập hay biện pháp bảo vệ của website.",
                 style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -128,6 +129,15 @@ private fun SaveOptionsCard(vm: AppViewModel, b: BatchUi) {
             Text("Nguyên trang HTML (~300 KB/bài)")
         }
         Text("Bài đã có đủ các bản đã chọn sẽ được bỏ qua, không tải lại.", style = MaterialTheme.typography.labelSmall)
+        val ms by vm.delayMs.collectAsState()
+        Text("Nghỉ giữa các bài", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            PacePolicy.OPTIONS.forEach { o ->
+                FilterChip(selected = ms == o, onClick = { vm.setDelay(o) }, label = { Text(PacePolicy.label(o)) })
+            }
+        }
+        Text("Ngắn hơn thì nhanh hơn nhưng dồn tải lên website hơn. Website trả lời chậm thì app tự nghỉ lâu hơn; " +
+            "gặp giới hạn (429/503) thì tự dừng.", style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -137,7 +147,7 @@ private fun MiniProgress(vm: AppViewModel, b: BatchUi, confirmed: Boolean) {
     val q = b.queue
     val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
     val left = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING)
-    val etaMin = (left * (AppViewModel.BATCH_DELAY_MS / 1000 + 1) + 59) / 60
+    val etaMin = PacePolicy.etaMinutes(left, vm.delayMs.collectAsState().value)
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
