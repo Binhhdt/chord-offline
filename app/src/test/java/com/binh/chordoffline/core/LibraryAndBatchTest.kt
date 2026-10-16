@@ -113,4 +113,31 @@ class LibraryAndBatchTest {
         assertFalse(BatchQueue.isBlockingResponse(200, "<div id=lyricBox></div>"))
         assertFalse(BatchQueue.isBlockingResponse(404, ""))
     }
+
+    @Test fun defaultsSaveBothVersionsAndOldFilesStillParse() {
+        val q = BatchQueue()
+        assertTrue(q.saveCompact); assertTrue(q.savePage)
+        // file hàng đợi cũ ghi page=0 vẫn được tôn trọng
+        assertFalse(BatchQueue.parse("${BatchQueue.HEADER}\n#opts\tcompact=1\tpage=0\n").savePage)
+    }
+
+    @Test fun storeSkipsAlreadySavedSongs() {
+        val dir = Files.createTempDirectory("skip").toFile()
+        try {
+            val st = SongStore(dir)
+            val url = "https://hopamviet.vn/chord/song/bai/K9X.html"
+            val key = st.keyForUrl(url)
+            assertEquals("K9X", key)
+            assertFalse(st.isSaved(key, compact = true, page = true))
+            val p = ParsedSong(url, "K9X", "1", "Bài", emptyList(), null, null, "C", emptyList(), emptyList(), null, "[C] lời")
+            st.saveCompact(key, p, ChordText.toChordPro(p, "t"))
+            assertTrue(st.isSaved(key, compact = true, page = false))
+            assertFalse("chưa có nguyên trang", st.isSaved(key, compact = true, page = true))
+            st.savePage(key, "Bài", "<html></html>", FetchMeta(url, url, 200, "text/html", 0), p)
+            assertTrue(st.isSaved(key, compact = true, page = true))
+            assertEquals("Bài", st.info(key)["title"])
+            assertFalse(st.isSaved(key, compact = false, page = false))
+            assertNull(SongStore.slugFromUrl("https://hopamviet.vn/"))
+        } finally { dir.deleteRecursively() }
+    }
 }

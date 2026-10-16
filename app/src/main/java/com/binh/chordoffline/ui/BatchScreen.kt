@@ -1,43 +1,66 @@
 package com.binh.chordoffline.ui
 
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.binh.chordoffline.core.BatchItem
 import com.binh.chordoffline.core.ItemState
+import com.binh.chordoffline.core.ListingPolicy
 import com.binh.chordoffline.core.Version
 
-/** Màn "Tải nhiều": mỗi dòng một link, tải tuần tự, nghỉ 3 giây giữa các bài. */
+/**
+ * Màn "Tải nhiều": lấy danh sách từ trang danh mục (xem trước, chọn, xác nhận) hoặc dán link / nhập TXT.
+ * Tải tuần tự, nghỉ 3 giây giữa các request; bài đã lưu thành công không tải lại.
+ */
 @Composable
 fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) -> Unit) {
     val b by vm.batch.collectAsState()
+    val d by vm.discover.collectAsState()
     val check by vm.check.collectAsState()
+    var mode by rememberSaveable { mutableIntStateOf(0) }
     var input by rememberSaveable { mutableStateOf("") }
     val q = b.queue
+    val context = LocalContext.current
+    val txtPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) vm.batchImportTxt(uri, fileName(context, uri))
+    }
 
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Text("Tải nhiều bài", style = MaterialTheme.typography.titleLarge)
-            Text("Tải tuần tự, nghỉ ${AppViewModel.BATCH_DELAY_MS / 1000} giây giữa các bài. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
-                "thì tự tạm dừng — app không vượt CAPTCHA, đăng nhập hay giới hạn của website.",
+            Text("Tải tuần tự, nghỉ ${AppViewModel.BATCH_DELAY_MS / 1000} giây giữa các request. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
+                "thì tự dừng — app không vượt CAPTCHA, đăng nhập hay biện pháp bảo vệ của website.",
                 style = MaterialTheme.typography.bodySmall)
-        }
-        item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = check.confirmed, onCheckedChange = vm::setConfirmed, enabled = !b.running)
                 Text("Tôi có quyền lưu các bài này, chỉ dùng cá nhân/phi thương mại, giữ ghi nguồn và không chia sẻ lại.",
                     style = MaterialTheme.typography.bodySmall)
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = mode == 0, onClick = { mode = 0 }, label = { Text("Từ trang danh mục") })
+                FilterChip(selected = mode == 1, onClick = { mode = 1 }, label = { Text("Dán link / TXT") })
+            }
         }
-        item {
+
+        if (mode == 0) discoverSection(vm, d, b.running)
+        else item {
             OutlinedTextField(
                 value = input, onValueChange = { input = it },
                 label = { Text("Mỗi dòng một link https://hopamviet.vn/chord/song/…") },
@@ -47,7 +70,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                 Button(onClick = { val r = vm.batchAdd(input); if (r.invalid.isEmpty()) input = "" }, enabled = input.isNotBlank()) {
                     Text("Thêm vào hàng đợi")
                 }
-                if (input.isNotBlank()) TextButton(onClick = { input = "" }) { Text("Xoá ô nhập") }
+                OutlinedButton(onClick = { txtPicker.launch(arrayOf("text/plain", "text/*", "*/*")) }) { Text("Nhập file TXT") }
             }
             b.lastAdd?.let { r ->
                 Text("Đã thêm ${r.added} · trùng bỏ qua ${r.duplicates} · không hợp lệ ${r.invalid.size}",
@@ -59,6 +82,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                 if (r.invalid.size > 5) Text("… và ${r.invalid.size - 5} dòng khác", style = MaterialTheme.typography.bodySmall)
             }
         }
+
         item {
             SectionCard("Kiểu lưu") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -69,39 +93,105 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                     Checkbox(checked = q.savePage, onCheckedChange = { vm.batchOptions(q.saveCompact, it) }, enabled = !b.running)
                     Text("Nguyên trang HTML (~300 KB/bài)")
                 }
+                Text("Bài đã có đủ các bản đã chọn sẽ được bỏ qua, không tải lại.", style = MaterialTheme.typography.labelSmall)
             }
         }
-        item {
-            SectionCard("Tiến độ") {
-                val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
-                val pending = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING); val cancelled = q.count(ItemState.CANCELLED)
-                Text("Tổng ${q.total} · Xong $done · Lỗi $err · Chờ $pending · Huỷ $cancelled", fontWeight = FontWeight.SemiBold)
-                if (q.total > 0) LinearProgressIndicator(progress = { q.finished.toFloat() / q.total }, modifier = Modifier.fillMaxWidth())
-                when {
-                    b.running && b.currentUrl != null -> Text("Đang tải: ${b.currentUrl}", style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    b.running && b.waitSeconds > 0 -> Text("Nghỉ giữa các request… còn ${b.waitSeconds} giây", style = MaterialTheme.typography.bodySmall)
-                }
-                if (b.pauseRequested) Text("Sẽ tạm dừng sau bài đang tải…", style = MaterialTheme.typography.bodySmall)
-                b.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
-                    color = if (it.startsWith("Website")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = vm::batchStart, enabled = !b.running && q.hasPending && check.confirmed) {
-                        Text(if (q.finished > 0) "Tiếp tục" else "Bắt đầu")
-                    }
-                    OutlinedButton(onClick = vm::batchPause, enabled = b.running && !b.pauseRequested) { Text("Tạm dừng") }
-                    OutlinedButton(onClick = vm::batchCancel, enabled = b.running || q.hasPending) { Text("Huỷ") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = vm::batchRetryFailed,
-                        enabled = !b.running && (err + cancelled) > 0 && check.confirmed) { Text("Thử lại lỗi ($err+$cancelled)") }
-                    TextButton(onClick = vm::batchClearDone, enabled = !b.running && done > 0) { Text("Bỏ mục xong") }
-                    TextButton(onClick = vm::batchClearAll, enabled = !b.running && q.total > 0) { Text("Xoá hết") }
-                }
-            }
-        }
+        item { ProgressCard(vm, b, check.confirmed) }
         items(q.items, key = { it.url }) { item -> BatchRow(item, b.running && b.currentUrl == item.url, onOpen) }
+    }
+}
+
+private fun LazyListScope.discoverSection(vm: AppViewModel, d: DiscoverUi, batchRunning: Boolean) {
+    item {
+        SectionCard("Lấy danh sách từ trang danh mục") {
+            Text("Dán link trang thể loại, nhạc sĩ, ca sĩ, điệu, bài hot hoặc bài mới. Trang tìm kiếm bị robots.txt của website chặn nên không hỗ trợ.",
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = d.url, onValueChange = vm::setDiscoverUrl, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                label = { Text("URL trang danh sách") }, enabled = !d.running,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Số trang tối đa:")
+                TextButton(onClick = { vm.setDiscoverPages(d.maxPages - 1) }, enabled = !d.running && d.maxPages > 1) { Text("−") }
+                Text("${d.maxPages}", fontWeight = FontWeight.Bold)
+                TextButton(onClick = { vm.setDiscoverPages(d.maxPages + 1) },
+                    enabled = !d.running && d.maxPages < ListingPolicy.MAX_PAGES_LIMIT) { Text("+") }
+                Text("(≈${d.maxPages * 30} bài, tối đa ${ListingPolicy.MAX_PAGES_LIMIT})", style = MaterialTheme.typography.labelSmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = vm::discoverStart, enabled = !d.running && !batchRunning) { Text("Quét danh sách") }
+                OutlinedButton(onClick = vm::discoverStop, enabled = d.running) { Text("Dừng quét") }
+            }
+            if (d.running) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(d.currentPage?.let { "Đang tải trang: $it" } ?: "Nghỉ giữa các request… còn ${d.waitSeconds} giây",
+                    style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            d.log.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+            d.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+                color = if (d.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+    if (d.items.isNotEmpty()) {
+        item {
+            SectionCard("Xem trước: ${d.items.size} bài · đã chọn ${d.selectedCount}") {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { vm.discoverSelect(true) }) { Text("Chọn tất cả") }
+                    TextButton(onClick = { vm.discoverSelect(false) }) { Text("Bỏ chọn") }
+                    TextButton(onClick = { vm.discoverSelect(null) }) { Text("Chỉ bài chưa lưu") }
+                }
+                Text("Bài đã lưu hoặc đã có trong hàng đợi được bỏ chọn sẵn.", style = MaterialTheme.typography.labelSmall)
+                Button(onClick = vm::discoverConfirm, enabled = !d.running && !batchRunning && d.selectedCount > 0) {
+                    Text("Xác nhận & tải ${d.selectedCount} bài")
+                }
+            }
+        }
+        items(d.items, key = { "found:" + it.song.url }) { fi ->
+            Row(Modifier.fillMaxWidth().clickable(enabled = !d.running) { vm.discoverToggle(fi.song.url) },
+                verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = fi.selected, onCheckedChange = { _ -> vm.discoverToggle(fi.song.url) }, enabled = !d.running)
+                Column(Modifier.weight(1f)) {
+                    Text(fi.song.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val tags = listOfNotNull(fi.song.artist, if (fi.alreadySaved) "✓ đã lưu" else null, if (fi.inQueue) "trong hàng đợi" else null)
+                    if (tags.isNotEmpty()) Text(tags.joinToString(" · "), style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProgressCard(vm: AppViewModel, b: BatchUi, confirmed: Boolean) {
+    val q = b.queue
+    SectionCard("Tiến độ hàng đợi") {
+        val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
+        val pending = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING); val cancelled = q.count(ItemState.CANCELLED)
+        Text("Tổng ${q.total} · Thành công $done · Thất bại $err · Chờ $pending · Huỷ $cancelled", fontWeight = FontWeight.SemiBold)
+        if (q.total > 0) LinearProgressIndicator(progress = { q.finished.toFloat() / q.total }, modifier = Modifier.fillMaxWidth())
+        when {
+            b.running && b.currentUrl != null -> Text("Đang tải: ${b.currentUrl}", style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            b.running && b.waitSeconds > 0 -> Text("Nghỉ giữa các request… còn ${b.waitSeconds} giây", style = MaterialTheme.typography.bodySmall)
+        }
+        if (b.pauseRequested) Text("Sẽ tạm dừng sau bài đang tải…", style = MaterialTheme.typography.bodySmall)
+        b.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+            color = if (it.startsWith("Website")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = vm::batchStart, enabled = !b.running && q.hasPending && confirmed) {
+                Text(if (q.finished > 0) "Tiếp tục" else "Bắt đầu")
+            }
+            OutlinedButton(onClick = vm::batchPause, enabled = b.running && !b.pauseRequested) { Text("Tạm dừng") }
+            OutlinedButton(onClick = vm::batchCancel, enabled = b.running || q.hasPending) { Text("Huỷ") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = vm::batchRetryFailed,
+                enabled = !b.running && (err + cancelled) > 0 && confirmed) { Text("Thử lại lỗi ($err+$cancelled)") }
+            TextButton(onClick = vm::batchClearDone, enabled = !b.running && done > 0) { Text("Bỏ mục xong") }
+            TextButton(onClick = vm::batchClearAll, enabled = !b.running && q.total > 0) { Text("Xoá hết") }
+        }
     }
 }
 
@@ -125,3 +215,9 @@ private fun BatchRow(item: BatchItem, current: Boolean, onOpen: (String, Version
         }
     }
 }
+
+private fun fileName(context: android.content.Context, uri: Uri): String? = runCatching {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+        if (c.moveToFirst()) c.getString(0) else null
+    }
+}.getOrNull()

@@ -60,6 +60,25 @@ class SongStore(private val root: File) {
 
     private fun dir(key: String) = File(root, key)
 
+    /** Khoá thư mục suy ra trực tiếp từ URL bài (…/W8IUDI0D.html -> W8IUDI0D), không cần tải trang. */
+    fun keyForUrl(url: String): String = keyFor(url, slugFromUrl(url))
+
+    /** Bài đã có đủ các bản được yêu cầu chưa (để không tải lại bài đã lưu thành công). */
+    fun isSaved(key: String, compact: Boolean, page: Boolean): Boolean =
+        (compact || page) &&
+            (!compact || status(key, Version.COMPACT).state == SaveState.SAVED) &&
+            (!page || status(key, Version.PAGE).state == SaveState.SAVED)
+
+    fun hasAny(key: String): Boolean =
+        status(key, Version.COMPACT).state == SaveState.SAVED || status(key, Version.PAGE).state == SaveState.SAVED
+
+    fun info(key: String): Map<String, String> = readPropsFile(File(dir(key), "info.properties"))
+
+    companion object {
+        fun slugFromUrl(url: String): String? =
+            url.substringBefore('?').substringBefore('#').substringAfterLast('/').removeSuffix(".html").takeIf { it.isNotBlank() }
+    }
+
     fun savePage(key: String, title: String?, html: String, meta: FetchMeta, song: ParsedSong? = null): VersionStatus = guarded(key, Version.PAGE) {
         val bytes = html.toByteArray(Charsets.UTF_8)
         writeAtomic(File(dir(key), Version.PAGE.dataFile), bytes)

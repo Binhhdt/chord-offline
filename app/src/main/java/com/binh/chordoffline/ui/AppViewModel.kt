@@ -56,6 +56,24 @@ data class BatchUi(
     val lastAdd: AddResult? = null,
 )
 
+/** Một bài tìm thấy khi quét trang danh mục, kèm trạng thái chọn để xem trước. */
+data class FoundItem(val song: FoundSong, val selected: Boolean, val alreadySaved: Boolean, val inQueue: Boolean)
+
+/** Trạng thái phần "Lấy danh sách từ trang danh mục". */
+data class DiscoverUi(
+    val url: String = "https://hopamviet.vn/chord/category/3/nhac-tre.html",
+    val maxPages: Int = 2,
+    val running: Boolean = false,
+    val waitSeconds: Int = 0,
+    val currentPage: String? = null,
+    val log: List<String> = emptyList(),
+    val items: List<FoundItem> = emptyList(),
+    val message: String? = null,
+    val isError: Boolean = false,
+) {
+    val selectedCount: Int get() = items.count { it.selected }
+}
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val fetcher = HttpFetcher()
@@ -76,6 +94,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _batch = MutableStateFlow(BatchUi(queue = loadBatch()))
     val batch: StateFlow<BatchUi> = _batch
     private var batchJob: Job? = null
+
+    private val _discover = MutableStateFlow(DiscoverUi())
+    val discover: StateFlow<DiscoverUi> = _discover
+    private var discoverJob: Job? = null
 
     fun setUrl(v: String) = _check.update { it.copy(url = v) }
     fun setConfirmed(v: Boolean) = _check.update { it.copy(confirmed = v) }
@@ -267,6 +289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             !b.queue.saveCompact && !b.queue.savePage -> { _batch.update { it.copy(message = "Chọn ít nhất một kiểu lưu.") }; return }
             !b.queue.hasPending -> { _batch.update { it.copy(message = "Không còn mục nào đang chờ.") }; return }
             _check.value.loading -> { _batch.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.") }; return }
+            _discover.value.running -> { _batch.update { it.copy(message = "Đang quét danh mục — đợi quét xong hoặc bấm Dừng quét.") }; return }
         }
         _batch.update { it.copy(running = true, pauseRequested = false, message = null) }
         batchJob = viewModelScope.launch { runBatch() }
@@ -339,6 +362,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private data class BatchOutcome(val ok: Boolean, val title: String?, val key: String?, val message: String?, val blocking: Boolean)
 
     private suspend fun processBatchItem(url: String, opts: BatchQueue): BatchOutcome {
+        // Bài đã có đủ các bản được yêu cầu -> không tải lại (không gửi request).
+        val knownKey = store.keyForUrl(url)
+        if (withContext(Dispatchers.IO) { store.isSaved(knownKey, opts.saveCompact, opts.savePage) }) {
+            val title = withContext(Dispatchers.IO) { store.info(knownKey)["title"] }
+            return BatchOutcome(true, title, knownKey, "Đã có trong máy — bỏ qua, không tải lại", false)
+        }
         val r = robots ?: withContext(Dispatchers.IO) { loadRobots() }.also {
             robots = it
             delay(BATCH_DELAY_MS)   // giữ khoảng nghỉ giữa request robots.txt và request bài hát
@@ -381,6 +410,156 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val info = "${parsed.lyricLineCount} dòng, ${parsed.inlineChordCount} hợp âm · ${f.elapsedMs} ms"
         return if (problems.isEmpty()) BatchOutcome(true, parsed.title, key, info, false)
         else BatchOutcome(false, parsed.title, key, problems.joinToString("; "), false)
+    }
+
+    // =====================================================================
+    // Lấy danh sách bài từ trang danh mục (thể loại/nhạc sĩ/ca sĩ/điệu/hot/mới).
+    // Tải tuần tự, nghỉ BATCH_DELAY_MS giữa các trang, giới hạn số trang, chống vòng lặp.
+    // Chỉ lấy link; KHÔNG tải bài cho tới khi người dùng xác nhận.
+    // =====================================================================
+
+    fun setDiscoverUrl(v: String) = _discover.update { it.copy(url = v) }
+    fun setDiscoverPages(n: Int) = _discover.update { it.copy(maxPages = n.coerceIn(1, ListingPolicy.MAX_PAGES_LIMIT)) }
+
+    fun discoverStart() {
+        val d = _discover.value
+        if (d.running) return
+        ListingPolicy.validate(d.url)?.let { why -> _discover.update { it.copy(message = why, isError = true) }; return }
+        if (_batch.value.running) { _discover.update { it.copy(message = "Hàng đợi đang tải — hãy tạm dừng trước khi quét.", isError = true) }; return }
+        if (_check.value.loading) { _discover.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.", isError = true) }; return }
+        _discover.update { it.copy(running = true, log = emptyList(), items = emptyList(), message = null, isError = false) }
+        discoverJob = viewModelScope.launch { runDiscover(BatchQueue.normalizeUrl(d.url.trim()), d.maxPages) }
+    }
+
+    fun discoverStop() {
+        discoverJob?.cancel(); discoverJob = null
+        _discover.update { it.copy(running = false, waitSeconds = 0, currentPage = null,
+            message = "Đã dừng quét. Danh sách tìm được đến lúc dừng vẫn được giữ.", isError = false) }
+    }
+
+    private suspend fun waitForSlot(onWait: (Int) -> Unit) {
+        while (true) {
+            val wait = BATCH_DELAY_MS - (System.currentTimeMillis() - lastRequestAt)
+            if (wait <= 0) return
+            onWait(((wait + 999) / 1000).toInt())
+            delay(minOf(wait, 250L))
+        }
+    }
+
+    private suspend fun runDiscover(startUrl: String, maxPages: Int) {
+        val d = Discovery(maxPages)
+        var url: String? = startUrl
+        var finalMsg: String? = null
+        var isError = false
+        try {
+            if (robots == null) {
+                robots = withContext(Dispatchers.IO) { loadRobots() }
+            }
+            while (true) {
+                val cur = url ?: break
+                waitForSlot { s -> _discover.update { it.copy(waitSeconds = s, currentPage = null) } }
+                val path = UrlPolicy.path(cur)
+                if (robots?.isAllowed(path) == false) { finalMsg = "robots.txt không cho phép $path — dừng."; isError = true; break }
+                _discover.update { it.copy(waitSeconds = 0, currentPage = cur) }
+                lastRequestAt = System.currentTimeMillis()
+                val f = withContext(Dispatchers.IO) { fetcher.fetch(cur) }
+                lastRequestAt = System.currentTimeMillis()
+                val pageNo = ListingPolicy.pageIndex(cur) + 1
+                if (BatchQueue.isBlockingResponse(f.status, f.body)) {
+                    finalMsg = "Website đang giới hạn/chặn (HTTP ${f.status ?: "?"}) ở trang $pageNo. Đã dừng quét — app không thử vượt qua."
+                    isError = true; break
+                }
+                if (!f.ok || f.body == null) {
+                    finalMsg = "Không tải được trang $pageNo: " + (f.error ?: "HTTP ${f.status}"); isError = true; break
+                }
+                val page = onBigStack("listing-parse") { ListingParser.parse(f.body, f.finalUrl ?: cur) }
+                val added = d.add(cur, page)
+                val logLine = "Trang $pageNo: ${page.songs.size} bài (${added} mới) · HTTP ${f.status} · ${f.elapsedMs} ms" +
+                    (if (page.method == "fallback") " · ⚠ không thấy cột chính, đã loại cột bên/menu" else "") +
+                    (if (page.excluded > 0) " · bỏ ${page.excluded} link ngoài danh sách chính" else "")
+                val found = d.found
+                val items = withContext(Dispatchers.IO) { found.map { toFoundItem(it) } }
+                _discover.update { it.copy(log = it.log + logLine, items = mergeSelection(it.items, items)) }
+                if (d.pages == 1 && page.songs.isEmpty()) {
+                    finalMsg = "Không tìm thấy link bài hát nào trên trang này. Có thể đây không phải trang danh sách bài hát, " +
+                        "hoặc cấu trúc trang đã thay đổi."
+                    isError = true; break
+                }
+                if (!d.shouldContinue(page.nextUrl, added)) { finalMsg = d.stopReason; break }
+                url = page.nextUrl
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            finalMsg = "Lỗi khi quét: ${e.javaClass.simpleName}: ${e.message}"; isError = true
+        } finally {
+            _discover.update {
+                if (!it.running) it   // đã dừng bằng nút Dừng quét
+                else it.copy(running = false, waitSeconds = 0, currentPage = null, isError = isError,
+                    message = listOfNotNull(finalMsg, "Tìm thấy ${it.items.size} bài trong ${d.pages} trang.").joinToString(" "))
+            }
+        }
+    }
+
+    private fun toFoundItem(s: FoundSong): FoundItem {
+        val saved = store.isSaved(store.keyForUrl(s.url), compact = _batch.value.queue.saveCompact, page = _batch.value.queue.savePage)
+        val key = BatchQueue.dedupeKey(s.url)
+        val queued = _batch.value.queue.items.any { BatchQueue.dedupeKey(it.url) == key && it.state != ItemState.CANCELLED }
+        return FoundItem(s, selected = !saved && !queued, alreadySaved = saved, inQueue = queued)
+    }
+
+    /** Giữ lựa chọn người dùng đã sửa cho các bài đã hiển thị từ trang trước. */
+    private fun mergeSelection(old: List<FoundItem>, new: List<FoundItem>): List<FoundItem> {
+        val prev = old.associateBy { it.song.url }
+        return new.map { n -> prev[n.song.url]?.let { n.copy(selected = it.selected) } ?: n }
+    }
+
+    fun discoverToggle(url: String) = _discover.update { d ->
+        d.copy(items = d.items.map { if (it.song.url == url) it.copy(selected = !it.selected) else it })
+    }
+
+    /** all = true: chọn tất cả; false: bỏ chọn tất cả; null: chỉ chọn bài chưa lưu và chưa có trong hàng đợi. */
+    fun discoverSelect(all: Boolean?) = _discover.update { d ->
+        d.copy(items = d.items.map { it.copy(selected = all ?: (!it.alreadySaved && !it.inQueue)) })
+    }
+
+    /** Người dùng xác nhận: thêm bài đã chọn vào hàng đợi rồi bắt đầu tải. */
+    fun discoverConfirm() {
+        val d = _discover.value
+        val urls = d.items.filter { it.selected }.map { it.song.url }
+        if (urls.isEmpty()) { _discover.update { it.copy(message = "Chưa chọn bài nào.", isError = true) }; return }
+        if (!_check.value.confirmed) { _discover.update { it.copy(message = "Hãy tick xác nhận quyền lưu trước.", isError = true) }; return }
+        val r = batchAdd(urls.joinToString("\n"))
+        val queued = _batch.value.queue.items.map { BatchQueue.dedupeKey(it.url) }.toSet()
+        _discover.update { s -> s.copy(
+            items = s.items.map { if (BatchQueue.dedupeKey(it.song.url) in queued) it.copy(inQueue = true, selected = false) else it },
+            message = "Đã thêm ${r.added} bài vào hàng đợi (bỏ ${r.duplicates} trùng). Bắt đầu tải…", isError = false) }
+        batchStart()
+    }
+
+    /** Nhập file TXT (mỗi dòng một link). Giới hạn 1 MB. */
+    fun batchImportTxt(uri: Uri, name: String?) {
+        viewModelScope.launch {
+            val text = runCatching {
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openInputStream(uri)!!.use { input ->
+                        val bytes = input.readNBytesCompat(1_048_577)
+                        require(bytes.size <= 1_048_576) { "File lớn hơn 1 MB" }
+                        bytes.toString(Charsets.UTF_8)
+                    }
+                }
+            }
+            text.onSuccess { t ->
+                val r = batchAdd(t)
+                _batch.update { it.copy(message = "Đã nhập ${name ?: "file"}: thêm ${r.added}, trùng ${r.duplicates}, không hợp lệ ${r.invalid.size}.") }
+            }.onFailure { e -> _batch.update { it.copy(message = "Không đọc được file: ${e.message}") } }
+        }
+    }
+
+    private fun java.io.InputStream.readNBytesCompat(max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream(); val buf = ByteArray(8192); var total = 0
+        while (total < max) { val n = read(buf, 0, minOf(buf.size, max - total)); if (n < 0) break; out.write(buf, 0, n); total += n }
+        return out.toByteArray()
     }
 
     override fun onCleared() {

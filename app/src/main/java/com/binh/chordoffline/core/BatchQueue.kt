@@ -24,7 +24,7 @@ data class AddResult(val added: Int, val duplicates: Int, val invalid: List<Pair
 data class BatchQueue(
     val items: List<BatchItem> = emptyList(),
     val saveCompact: Boolean = true,
-    val savePage: Boolean = false,
+    val savePage: Boolean = true,      // mặc định lưu cả nguyên trang và bản gọn
 ) {
     val total get() = items.size
     fun count(s: ItemState) = items.count { it.state == s }
@@ -88,7 +88,7 @@ data class BatchQueue(
                 if (line.isBlank() || line == HEADER) continue
                 if (line.startsWith("#opts")) {
                     val opts = line.split('\t').drop(1).associate { it.substringBefore('=') to it.substringAfter('=') }
-                    q = q.copy(saveCompact = opts["compact"] != "0", savePage = opts["page"] == "1")
+                    q = q.copy(saveCompact = opts["compact"] != "0", savePage = opts["page"] != "0")
                     continue
                 }
                 val f = line.split('\t').map { unesc(it) }
