@@ -14,6 +14,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.binh.chordoffline.core.Version
 import com.binh.chordoffline.ui.AppViewModel
 import com.binh.chordoffline.ui.BatchScreen
+import com.binh.chordoffline.ui.ChordTheme
 import com.binh.chordoffline.ui.CheckScreen
 import com.binh.chordoffline.ui.CompactViewer
 import com.binh.chordoffline.ui.LibraryScreen
@@ -23,9 +24,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                AppRoot()
-            }
+            ChordTheme { AppRoot() }
         }
     }
 }

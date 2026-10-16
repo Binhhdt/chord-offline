@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#1B1D23</color>
+    <color name="stage_ink">#0E0F12</color>
+    <color name="stage_surface">#15171C</color>
+</resources>

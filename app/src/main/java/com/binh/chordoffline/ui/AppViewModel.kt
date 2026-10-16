@@ -113,6 +113,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var batchJob: Job? = null
 
     val backup = StorageBackup(app, store)
+
+    // ---------- Màu hợp âm (lưu cho mọi bài, chỉ đổi hiển thị) ----------
+    private val displayPrefs = app.getSharedPreferences("display", android.content.Context.MODE_PRIVATE)
+    private val _chordStyle = MutableStateFlow(ChordStyle(
+        color = displayPrefs.getLong("chord_color", ChordColors.DEFAULT),
+        highlight = displayPrefs.getBoolean("chord_highlight", false),
+    ))
+    val chordStyle: StateFlow<ChordStyle> = _chordStyle
+
+    fun setChordColor(argb: Long) {
+        _chordStyle.update { it.copy(color = argb) }
+        displayPrefs.edit().putLong("chord_color", argb).apply()
+    }
+
+    fun setChordHighlight(v: Boolean) {
+        _chordStyle.update { it.copy(highlight = v) }
+        displayPrefs.edit().putBoolean("chord_highlight", v).apply()
+    }
     private val _storage = MutableStateFlow(StorageUi())
     val storage: StateFlow<StorageUi> = _storage
 

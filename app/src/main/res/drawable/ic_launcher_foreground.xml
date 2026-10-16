@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icon mẫu B "Sân khấu đêm": ngoặc [ ] hổ phách quanh thế bấm hợp âm. Nội dung nằm trong vùng an toàn 66dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.45" android:scaleY="0.45">
+        <path android:pathData="M96,70 V170 M120,70 V170 M144,70 V170 M90,100 H150 M90,134 H150"
+            android:strokeColor="#3A3E48" android:strokeWidth="4" android:fillColor="#00000000"/>
+        <path android:pathData="M78,62 H58 V178 H78 M162,62 H182 V178 H162"
+            android:strokeColor="#F2A33A" android:strokeWidth="16" android:fillColor="#00000000"
+            android:strokeLineCap="round" android:strokeLineJoin="round"/>
+        <path android:pathData="M84,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#EDEAE3"/>
+        <path android:pathData="M108,151 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#F2A33A"/>
+        <path android:pathData="M132,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0" android:fillColor="#EDEAE3"/>
+    </group>
+</vector>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Nền tối ngay từ lúc mở app (không nháy trắng) — mẫu B "Sân khấu đêm" -->
+    <style name="Theme.ChordOffline" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/stage_ink</item>
+        <item name="android:statusBarColor">@color/stage_ink</item>
+        <item name="android:navigationBarColor">@color/stage_surface</item>
+        <item name="android:colorAccent">#F2A33A</item>
+    </style>
+</resources>

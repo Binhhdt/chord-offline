@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bản một màu cho "Biểu tượng theo chủ đề" (Android 13+). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.45" android:scaleY="0.45">
+        <path android:pathData="M78,62 H58 V178 H78 M162,62 H182 V178 H162"
+            android:strokeColor="#FFFFFF" android:strokeWidth="16" android:fillColor="#00000000"
+            android:strokeLineCap="round" android:strokeLineJoin="round"/>
+        <path android:pathData="M84,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0 M108,151 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0 M132,117 a12,12 0 1,0 24,0 a12,12 0 1,0 -24,0"
+            android:fillColor="#FFFFFF"/>
+    </group>
+</vector>

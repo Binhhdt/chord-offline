@@ -45,7 +45,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.binh.chordoffline.core.ChordColors
+import com.binh.chordoffline.core.ChordStyle
 import com.binh.chordoffline.core.SavedSong
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import com.binh.chordoffline.core.SingerExtractor
 import com.binh.chordoffline.core.SingerInfo
 import com.binh.chordoffline.core.ChordText
@@ -237,6 +244,12 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     var chordsAbove by remember { mutableStateOf(false) }
     var size by remember { mutableFloatStateOf(16f) }
     var tr by rememberSaveable(key, stateSaver = TransposeSaver) { mutableStateOf(TransposeState()) }
+    val style by vm.chordStyle.collectAsState()
+    val chordColor = Color(style.color)
+    val chordBg = if (style.highlight) chordColor.copy(alpha = 0.18f) else Color.Unspecified
+    var showColors by remember { mutableStateOf(false) }
+    if (showColors) ChordColorDialog(style, onPick = vm::setChordColor, onHighlight = vm::setChordHighlight,
+        onDismiss = { showColors = false })
     val doc = text?.let { ChordText.parseChordPro(it) }
 
     Scaffold(topBar = {
@@ -274,17 +287,20 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                 FilterChip(selected = chordsAbove, onClick = { chordsAbove = true }, label = { Text("Hợp âm phía trên") })
                 TextButton(onClick = { size = (size - 1).coerceAtLeast(10f) }) { Text("A-") }
                 TextButton(onClick = { size = (size + 1).coerceAtMost(30f) }) { Text("A+") }
+                TextButton(onClick = { showColors = true }) {
+                    Box(Modifier.size(14.dp).clip(CircleShape).background(chordColor))
+                    Text(" Màu")
+                }
             }
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
-            val chordColor = MaterialTheme.colorScheme.primary
             SelectionContainer {
                 if (!chordsAbove) {
                     Text(buildAnnotatedString {
                         var last = 0
                         ChordText.CHORD.findAll(body).forEach { m ->
                             append(body.substring(last, m.range.first))
-                            withStyle(SpanStyle(color = chordColor, fontWeight = FontWeight.Bold)) { append(m.value) }
+                            withStyle(SpanStyle(color = chordColor, fontWeight = FontWeight.Bold, background = chordBg)) { append(m.value) }
                             last = m.range.last + 1
                         }
                         append(body.substring(last))
@@ -300,7 +316,7 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                         Column {
                             body.lines().forEach { line ->
                                 ChordText.wrapAbove(line, cols).forEach { (c, l) ->
-                                    if (c.isNotEmpty()) Text(c, style = mono, color = chordColor,
+                                    if (c.isNotEmpty()) Text(chordLine(c, chordBg), style = mono, color = chordColor,
                                         fontWeight = FontWeight.Bold, softWrap = false, maxLines = 1)
                                     Text(l.ifEmpty { " " }, style = mono, softWrap = false, maxLines = 1)
                                 }
@@ -325,6 +341,7 @@ fun PageViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     var html by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(key) { html = vm.load(key, Version.PAGE) ?: "" }
     val meta = remember(key) { vm.store.meta(key, Version.PAGE) }
+    val chordArgb = vm.chordStyle.collectAsState().value.color
     Scaffold(topBar = {
         TopAppBar(title = { Text("Nguyên trang (offline)", maxLines = 1) },
             navigationIcon = { TextButton(onClick = onBack) { Text("←") } })
@@ -340,7 +357,7 @@ fun PageViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                     settings.blockNetworkLoads = true
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
-                    loadDataWithBaseURL(null, withViewerCss(h), "text/html", "utf-8", null)
+                    loadDataWithBaseURL(null, withViewerCss(h, ChordColors.toHex(chordArgb)), "text/html", "utf-8", null)
                 }
             })
         }
@@ -351,14 +368,14 @@ fun PageViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
  * CSS chỉ dùng khi XEM (file đã lưu giữ nguyên): trang gốc dựa vào CSS/JS bên ngoài nên khi offline
  * icon SVG phình to và lời mất xuống dòng. Thu nhỏ icon, ẩn quảng cáo, giữ xuống dòng của lời.
  */
-private fun withViewerCss(html: String): String {
+private fun withViewerCss(html: String, chordHex: String = "#F2A33A"): String {
     val css = """<style id="chord-offline-viewer">
         body{font-family:sans-serif;padding:8px;line-height:1.5}
         svg,img{max-width:1.4em!important;max-height:1.4em!important;width:auto!important;height:auto!important}
         ins.adsbygoogle,.ad-container,iframe{display:none!important}
         #lyricBox{border:1px solid #ccc;border-radius:8px;padding:12px;margin:12px 0}
         .lyric-version{white-space:pre-wrap;font-size:17px;line-height:1.7}
-        .chord{color:#0B7285;font-weight:bold}
+        .chord{color:$chordHex;font-weight:bold}
         </style>"""
     val i = html.indexOf("</head>", ignoreCase = true)
     return if (i >= 0) html.substring(0, i) + css + html.substring(i) else css + html
@@ -412,4 +429,64 @@ private fun SingerSection(vm: AppViewModel, key: String, singers: List<SingerInf
     }
     if (singers.any { it.youtubeId != null }) Text("Ảnh xem được offline; mở video YouTube cần có mạng.",
         style = MaterialTheme.typography.labelSmall)
+}
+
+/** Dòng hợp âm (chế độ phía trên): tô nền từng tên hợp âm, giữ nguyên khoảng trắng để thẳng cột. */
+private fun chordLine(c: String, bg: Color) = buildAnnotatedString {
+    if (bg == Color.Unspecified) { append(c); return@buildAnnotatedString }
+    Regex("""\S+|\s+""").findAll(c).forEach { m ->
+        if (m.value.isBlank()) append(m.value) else withStyle(SpanStyle(background = bg)) { append(m.value) }
+    }
+}
+
+/** Chọn màu hợp âm: bảng màu dễ đọc trên nền tối, mã hex tuỳ chỉnh (kiểm tra độ tương phản), tô nền. */
+@Composable
+private fun ChordColorDialog(style: ChordStyle, onPick: (Long) -> Unit, onHighlight: (Boolean) -> Unit, onDismiss: () -> Unit) {
+    var hex by remember { mutableStateOf(ChordColors.toHex(style.color)) }
+    val parsed = ChordColors.parseHex(hex)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Màu hợp âm") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ChordColors.PALETTE.chunked(5).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { c ->
+                            val selected = c.argb == style.color
+                            Box(Modifier.size(44.dp).clip(CircleShape).background(Color(c.argb))
+                                .border(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline, CircleShape)
+                                .clickable { onPick(c.argb); hex = ChordColors.toHex(c.argb) },
+                                contentAlignment = Alignment.Center) {
+                                if (selected) Text("✓", color = Color(0xFF15171C), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                Text(ChordColors.PALETTE.firstOrNull { it.argb == style.color }?.name ?: "Màu tuỳ chọn",
+                    style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = hex, onValueChange = { hex = it.take(7) }, singleLine = true,
+                        label = { Text("Mã màu #RRGGBB") }, modifier = Modifier.weight(1f))
+                    Button(onClick = { parsed?.let(onPick) }, enabled = parsed != null) { Text("Áp dụng") }
+                }
+                if (parsed != null && !ChordColors.readable(parsed)) Text(
+                    "Màu này hơi tối trên nền đen (tương phản ${"%.1f".format(ChordColors.contrast(parsed, ChordColors.BACKGROUND))}:1, nên ≥ 4.5:1) — có thể khó đọc.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Switch(checked = style.highlight, onCheckedChange = onHighlight)
+                    Text("Tô nền mờ sau hợp âm")
+                }
+                // xem trước
+                Text(buildAnnotatedString {
+                    val bg = if (style.highlight) Color(style.color).copy(alpha = 0.18f) else Color.Unspecified
+                    withStyle(SpanStyle(color = Color(style.color), fontWeight = FontWeight.Bold, background = bg)) { append("[Am]") }
+                    append(" Chiều nay mưa bay trên ")
+                    withStyle(SpanStyle(color = Color(style.color), fontWeight = FontWeight.Bold, background = bg)) { append("[G]") }
+                    append(" phố nhỏ")
+                }, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(10.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Xong") } },
+        dismissButton = { TextButton(onClick = { onPick(ChordColors.DEFAULT); onHighlight(false); hex = ChordColors.toHex(ChordColors.DEFAULT) }) { Text("Mặc định") } },
+    )
 }
