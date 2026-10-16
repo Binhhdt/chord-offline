@@ -4,7 +4,7 @@ App Android nhỏ dùng để **kiểm tra thực tế trên điện thoại**:
 - trang bài hát của Hợp Âm Việt có trả về lời và hợp âm ngay trong HTML server khi tải trực tiếp hay không,
 - nếu có thì lưu bản offline cho mục đích cá nhân.
 
-App chưa được chạy thử trên thiết bị thật. Kết quả tải trực tiếp chỉ có sau khi bạn chạy app theo mục **Cách kiểm tra**.
+Từ v0.2.0 app có thêm: hợp âm phía trên tự xuống dòng, chuyển tone, tìm kiếm bài đã lưu và tải nhiều URL (xem mục **Tính năng v0.2.0**).
 
 ## Tình trạng kiểm chứng (16/10/2026)
 
@@ -16,6 +16,8 @@ App chưa được chạy thử trên thiết bị thật. Kết quả tải tr�
 | Lời/hợp âm trong HTML server | ✅ **Có sẵn, không cần JavaScript**: đủ 5 selector; 25 dòng, 42 hợp âm inline (khớp 42 `span.chord`) |
 | Lưu 2 bản độc lập | ✅ Lưu nguyên trang (358,5 KB) và bản gọn (1,8 KB), trạng thái riêng từng bản |
 | Biên dịch APK (Compose UI) | ✅ GitHub Actions build thành công |
+| Hợp âm phía trên (v0.1.3, trên điện thoại) | ✅ Hiển thị đúng với bài *Người dưng* (ảnh chụp ngày 16/10). Phiên bản v0.2.0 viết lại cách ngắt dòng, **chưa kiểm tra lại trên máy** |
+| Chuyển tone, tìm kiếm, tải nhiều (v0.2.0) | ✅ Unit test trên JVM và CI đều đạt; build APK thành công. ⏳ **Chưa kiểm tra trên điện thoại** |
 | So sánh HTML server với bản lưu từ trình duyệt (v0.1.3, *Người dưng*, cùng bài W8IUDI0D) | ✅ Lời **giống hệt** (53 dòng, 64 hợp âm). Server 296,4 KB, 510 ms |
 
 ### Kết quả so sánh: server render và JavaScript (16/10/2026)
@@ -40,7 +42,8 @@ Theo `robots.txt` và [Điều khoản](https://hopamviet.vn/info/policy), đọ
   - dữ liệu chỉ nằm trong bộ nhớ riêng của app: không đồng bộ, không có nút chia sẻ, `allowBackup=false`;
   - nếu bạn định phát hành app hoặc chia sẻ bản lưu, hãy **xin phép Hợp Âm Việt bằng văn bản** trước.
 - Hành vi mạng của app:
-  - mỗi lần bấm chỉ gửi **một request**, cách lần trước ít nhất 5 giây;
+  - tab Kiểm tra URL: mỗi lần bấm chỉ gửi **một request**, cách lần trước ít nhất 5 giây;
+  - tab Tải nhiều: tải **tuần tự**, nghỉ **3 giây** giữa các request (tính cả request robots.txt). Gặp HTTP 403/429/503 hoặc trang xác minh thì **tự tạm dừng cả hàng đợi** và không tự thử lại;
   - User-Agent ghi đúng tên app, không giả làm trình duyệt;
   - không cookie, không cache, không đăng nhập;
   - không vượt captcha hay chặn bot, không chạy JavaScript ẩn để lấy nội dung.
@@ -54,11 +57,15 @@ app/src/main/java/com/binh/chordoffline/
 │   ├── ChordText.kt      # định dạng .cho (ChordPro), tách hợp âm lên trên
 │   ├── HtmlInspection.kt # kiểm tra selector, so sánh server vs bản lưu, chẩn đoán
 │   ├── RobotsRules.kt    # robots.txt + giới hạn URL
-│   └── SongStore.kt      # lưu 2 bản độc lập, mỗi bản có trạng thái riêng
+│   ├── SongStore.kt      # lưu 2 bản độc lập, mỗi bản có trạng thái riêng; kèm ca sĩ/nhạc sĩ/tone để tìm kiếm
+│   ├── Transpose.kt      # chuyển tone theo bán cung + TransposeState (hoàn tác)
+│   ├── LibrarySearch.kt  # tìm kiếm không dấu, sắp xếp
+│   └── BatchQueue.kt     # hàng đợi tải nhiều: thêm/bỏ trùng/trạng thái/lưu ra file
 ├── net/HttpFetcher.kt    # OkHttp: status, URL sau redirect, Content-Type, kích thước, thời gian
-├── ui/                   # Compose: màn Kiểm tra URL, Đã lưu, trình xem
+├── ui/                   # Compose: Kiểm tra URL, Đã lưu (tìm kiếm), Tải nhiều, trình xem (chuyển tone)
 └── MainActivity.kt
-app/src/test/.../CoreTest.kt  # dùng HTML mẫu với lời giả
+app/src/test/.../core/        # unit test, dùng HTML/lời giả (không chứa nội dung có bản quyền)
+    CoreTest, ChordWrapTest, TransposeTest, LibraryAndBatchTest, RegexAndroidCompatTest
 ```
 
 ### Hai chế độ lưu
@@ -71,6 +78,48 @@ Hai bản độc lập với nhau: mỗi bản có trạng thái *Chưa lưu / �
 | Lời/hợp âm gọn | `song.cho` + `compact.properties` | Phần đầu là các dòng `{title:}`, `{composer:}`, `{key:}`, `{source:}`, `{fetched_at:}`. Phần lời giữ nguyên dòng trống và hợp âm inline `[Am]`. |
 
 Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
+
+## Tính năng v0.2.0
+
+### Hợp âm phía trên
+- Mỗi hợp âm được **neo vào đúng ký tự** của lời. Khi màn hình hẹp hoặc phóng to chữ (A+), dòng tự xuống ở khoảng trắng mà hợp âm vẫn nằm đúng trên chữ.
+- Nếu hợp âm ở cuối đoạn bị tràn quá độ rộng, app lùi điểm ngắt dòng về khoảng trắng trước đó.
+- Các trường hợp đặc biệt được giữ đúng:
+  - dòng trống và nhãn đoạn (`ĐK:`);
+  - dòng chỉ có hợp âm, được xếp thành nhiều dòng nếu cần;
+  - hai hợp âm liền nhau (cách nhau 1 khoảng trắng);
+  - từ dài không có khoảng trắng, được cắt cứng.
+- Số cột được tính từ độ rộng màn hình và cỡ chữ monospace hiện tại.
+
+### Chuyển tone
+- Các nút **−½ / +½** chuyển tone xuống/lên một bán cung. Có thêm nút **Hoàn tác** từng bước và **Về gốc**. Dòng tone hiển thị dạng `Am → Bm (+2)`.
+- Hỗ trợ hợp âm trưởng, thứ, 7, maj7, m7, m7b5, sus2/sus4, dim/dim7, aug/+, add9, 6/9/11/13, `(b9)` và slash chord (`C/E` → `D/F#`).
+- Dùng dấu `#` hay `b` tuỳ theo tone đích, ví dụ Am +1 → **Bbm**, Am −1 → **G#m**.
+- Ký hiệu không phải hợp âm như `[x2]` hay `[ĐK]` được giữ nguyên.
+- **Chỉ đổi phần hiển thị**: file `.cho` gốc không bị sửa. Mức chuyển tone được giữ khi xoay màn hình, và trở về gốc khi đóng bài.
+
+### Tìm kiếm bài đã lưu (tab Đã lưu)
+- Tìm theo **tên bài, ca sĩ, nhạc sĩ**, hoặc tất cả cùng lúc. Không phân biệt hoa/thường và **không cần gõ dấu** ("nguoi dung" vẫn ra "Người dưng"). Có thể gõ nhiều từ (bài phải chứa đủ các từ) và gõ dở chữ.
+- Sắp xếp theo: Mới lưu, Tên A–Z, Nhạc sĩ A–Z, Ca sĩ A–Z. Bài thiếu thông tin được xếp cuối.
+- Mọi thứ chạy offline, mở bài không cần mạng. Bài lưu bằng bản cũ vẫn tìm được, vì app đọc thông tin từ phần đầu file `.cho`.
+
+### Tải nhiều (tab Tải nhiều)
+1. Tick ô xác nhận quyền.
+2. Dán danh sách link, mỗi dòng một link. Dòng trống và dòng bắt đầu bằng `#` được bỏ qua.
+3. Bấm **Thêm vào hàng đợi**. App tự xử lý danh sách:
+   - đổi `http` thành `https`, bỏ `www.` và bỏ phần `#…`;
+   - **bỏ link trùng**, kể cả trùng với link đã có trong hàng đợi;
+   - báo các dòng không hợp lệ kèm lý do (sai website, hoặc là `/chord/printsong/` bị robots.txt chặn).
+4. Chọn kiểu lưu: bản gọn, nguyên trang, hoặc cả hai.
+5. Bấm **Bắt đầu**. App tải **tuần tự**, nghỉ 3 giây giữa các bài, và hiện tiến độ (Xong / Lỗi / Chờ / Huỷ) cùng thanh phần trăm.
+6. Các nút điều khiển:
+   - **Tạm dừng**: dừng sau bài đang tải.
+   - **Tiếp tục**.
+   - **Huỷ**: các mục chưa tải chuyển sang "Đã huỷ", mục đã xong được giữ.
+   - **Thử lại lỗi**: đưa các mục lỗi và đã huỷ về hàng chờ.
+   - **Bỏ mục xong** và **Xoá hết**.
+7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
+8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
 ## Build APK bằng GitHub Actions
 
@@ -89,7 +138,7 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
    - chép file APK vào máy, bật "Cài ứng dụng không rõ nguồn gốc" rồi mở file; hoặc
    - dùng lệnh `adb install -r app-debug.apk`.
 
-Nếu workflow báo lỗi biên dịch, hãy gửi cho mình log của bước *Build debug APK* để sửa. Phần UI chưa được build lần nào trước lần chạy đầu tiên này.
+Nếu workflow báo lỗi biên dịch, hãy gửi log của bước *Build debug APK* để sửa.
 
 Muốn build trên máy tính: cài Android Studio (JDK 17, SDK 35), mở thư mục rồi chạy `./gradlew assembleDebug`.
 
@@ -128,8 +177,20 @@ Muốn build trên máy tính: cài Android Studio (JDK 17, SDK 35), mở thư m
 | Lưu nguyên trang / bản gọn | |
 | Mở offline (chế độ máy bay) | |
 
+### Kiểm tra v0.2.0 trên điện thoại
+1. **Hợp âm phía trên**: mở bài *Người dưng*, chọn "Hợp âm phía trên", rồi bấm A+ nhiều lần. Kiểm tra hợp âm vẫn nằm đúng trên chữ ở mọi cỡ chữ, và dòng trống trước `T-ĐK:` vẫn còn.
+2. **Chuyển tone**: bấm +½ hai lần, tone phải hiện `Am → Bm (+2)` và hợp âm `[G]` thành `[A]`. Bấm **Hoàn tác** một lần thì về +1, bấm **Về gốc** thì về Am. Đóng rồi mở lại bài, hợp âm phải là bản gốc.
+3. **Tìm kiếm**: gõ `nguoi dung`, `jack` (ở chế độ Ca sĩ) và `tran kim` (ở chế độ Nhạc sĩ). Bật chế độ máy bay rồi mở bài để chắc chắn xem được offline.
+4. **Tải nhiều**:
+   - dán 3 link, trong đó có 1 link trùng và 1 link sai website, rồi xem app báo kết quả thêm vào hàng đợi;
+   - bấm Bắt đầu, sau đó Tạm dừng, rồi Tiếp tục;
+   - thoát hẳn app khi đang tải, mở lại và xem trạng thái còn giữ không;
+   - bật chế độ máy bay giữa chừng để tạo lỗi, rồi bấm **Thử lại lỗi**.
+
 ## Giới hạn đã biết
 
 - Bản nguyên trang chỉ có HTML, không tải kèm CSS, ảnh hay JS, để giảm số request và tránh sao chép tài nguyên của website.
 - Parser phụ thuộc các id hiện tại của trang. Nếu website đổi giao diện, mục **2. Selector** sẽ báo ❌ ngay.
 - Chỉ đọc khối `#lyric-version-0`, tức phiên bản lời đầu tiên.
+- Chuyển tone không được lưu lại sau khi đóng bài (theo yêu cầu "chỉ đổi hiển thị").
+- Hàng đợi tải nhiều không chạy nền khi app đã đóng.

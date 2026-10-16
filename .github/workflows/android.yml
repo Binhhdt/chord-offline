@@ -20,7 +20,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Unit tests (parser, so sánh, robots, lưu trữ)
+      - name: Unit tests (parser, so sánh, robots, lưu trữ, ngắt dòng, chuyển tone, tìm kiếm, hàng đợi)
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon testDebugUnitTest
