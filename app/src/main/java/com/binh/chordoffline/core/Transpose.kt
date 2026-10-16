@@ -71,6 +71,13 @@ object Transpose {
         return chord(originalKey, steps, preferFlats(originalKey, steps, "")) ?: originalKey
     }
 
+    /** Số bán cung để chuyển từ tone [from] sang tone [to] (ví dụ Am -> Bm = +2); null nếu không đọc được. */
+    fun stepsBetween(from: String?, to: String?): Int? {
+        val a = from?.let { parse(it) } ?: return null
+        val b = to?.let { parse(it) } ?: return null
+        return normalize(b.root - a.root)
+    }
+
     /** Đưa số bán cung về khoảng -5..+6 để hiển thị gọn. */
     fun normalize(steps: Int): Int { val s = Math.floorMod(steps, 12); return if (s > 6) s - 12 else s }
 }
@@ -81,6 +88,8 @@ data class TransposeState(val steps: Int = 0, val history: List<Int> = emptyList
     fun up() = TransposeState(Transpose.normalize(steps + 1), history + steps)
     fun down() = TransposeState(Transpose.normalize(steps - 1), history + steps)
     fun reset() = if (steps == 0) this else TransposeState(0, history + steps)
+    /** Nhảy thẳng tới một mức (ví dụ tone ca sĩ); vẫn hoàn tác được. */
+    fun to(n: Int): TransposeState = Transpose.normalize(n).let { if (it == steps) this else TransposeState(it, history + steps) }
     fun undo() = if (history.isEmpty()) this else TransposeState(history.last(), history.dropLast(1))
     val label: String get() = when { steps > 0 -> "+$steps"; else -> "$steps" }
 }

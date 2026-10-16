@@ -40,4 +40,18 @@ object LibrarySearch {
             SortMode.SINGER -> hit.sortedWith(compareBy<SavedSong>({ it.singers.isNullOrBlank() }, { fold(it.singers) }).then(byTitle))
         }
     }
+
+    /**
+     * Gợi ý khi đang gõ (giống ô tìm kiếm của website): tối đa [limit] bài, ưu tiên tên bài bắt đầu bằng
+     * truy vấn, rồi tên bài chứa truy vấn, rồi khớp ca sĩ/nhạc sĩ.
+     */
+    fun suggest(songs: List<SavedSong>, query: String, limit: Int = 6): List<SavedSong> {
+        val q = fold(query)
+        if (q.isEmpty()) return emptyList()
+        fun rank(s: SavedSong): Int {
+            val t = fold(s.title)
+            return when { t.startsWith(q) -> 0; t.contains(q) -> 1; else -> 2 }
+        }
+        return filter(songs, query, SearchField.ALL, SortMode.TITLE).sortedBy { rank(it) }.take(limit)
+    }
 }

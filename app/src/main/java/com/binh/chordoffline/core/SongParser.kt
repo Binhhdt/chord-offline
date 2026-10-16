@@ -20,6 +20,8 @@ data class ParsedSong(
     val youtubeId: String?,
     /** Lời với hợp âm inline dạng [Am], giữ nguyên dòng trống. null nếu không có trong HTML. */
     val lyrics: String?,
+    /** Ca sĩ + tone + video YouTube (nếu có trong HTML). Thêm ở v0.4.0, mặc định rỗng để tương thích. */
+    val singers: List<SingerInfo> = emptyList(),
 ) {
     val lyricLineCount: Int get() = lyrics?.lines()?.size ?: 0
     val inlineChordCount: Int get() = lyrics?.let { ChordText.CHORD.findAll(it).count() } ?: 0
@@ -62,6 +64,7 @@ object SongParser {
                 .filter { it.isNotEmpty() }.distinct(),
             youtubeId = youtube,
             lyrics = extractLyrics(doc),
+            singers = runCatching { SingerExtractor.extract(doc) }.getOrDefault(emptyList()),
         )
     }
 

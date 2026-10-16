@@ -28,6 +28,13 @@ jobs:
       - name: Build debug APK
         run: ./gradlew --no-daemon assembleDebug
 
+      - name: Kiểm tra chữ ký cố định
+        run: |
+          APKSIGNER=$(ls $ANDROID_HOME/build-tools/*/apksigner | sort -V | tail -1)
+          $APKSIGNER verify --print-certs app/build/outputs/apk/debug/app-debug.apk | tee certs.txt
+          grep -qi "SHA-256 digest: 9254bdbae6b99df073c959561f103543fd9cc2bf48c51414e03051f30478b5d2" certs.txt \
+            || (echo "APK không ký bằng keystore cố định!" && exit 1)
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

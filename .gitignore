@@ -9,3 +9,6 @@ captures/
 # không đưa HTML/lời bài hát tải về vào repo
 *.html
 *.cho
+*.jks
+# Keystore debug cố định (mật khẩu chuẩn 'android'): cần commit để mọi bản build cùng chữ ký, cài đè không mất dữ liệu
+!keystore/debug.keystore

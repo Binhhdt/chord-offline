@@ -88,6 +88,16 @@ class HttpFetcher(
         }
     }
 
+    /** Tải dữ liệu nhị phân nhỏ (ảnh thu nhỏ YouTube). Trả về bytes hoặc null nếu lỗi/không phải ảnh. */
+    fun fetchImage(url: String, max: Long = 2L * 1024 * 1024): ByteArray? = try {
+        val req = Request.Builder().url(url).header("User-Agent", USER_AGENT).get().build()
+        client.newCall(req).execute().use { resp ->
+            val type = resp.header("Content-Type").orEmpty()
+            if (!resp.isSuccessful || !type.startsWith("image/")) null
+            else resp.body?.byteStream()?.use { readLimited(it, max) }?.takeIf { !it.second }?.first
+        }
+    } catch (e: IOException) { null } catch (e: IllegalArgumentException) { null }
+
     private fun readLimited(input: InputStream, max: Long): Pair<ByteArray, Boolean> {
         val out = java.io.ByteArrayOutputStream()
         val buf = ByteArray(16 * 1024)

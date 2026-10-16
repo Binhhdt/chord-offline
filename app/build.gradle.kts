@@ -12,11 +12,23 @@ android {
         applicationId = "com.binh.chordoffline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.3.0"
+        versionCode = 7
+        versionName = "0.4.0"
+    }
+
+    // Chữ ký CỐ ĐỊNH cho mọi bản build (kể cả trên GitHub Actions): Android chỉ cho cài đè bản mới
+    // khi cùng chữ ký, nên giữ được dữ liệu đã lưu. Không đổi/xoá file keystore/debug.keystore.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
+        debug { signingConfig = signingConfigs.getByName("debug") }
         release { isMinifyEnabled = false }
     }
     compileOptions {
@@ -40,6 +52,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
 }

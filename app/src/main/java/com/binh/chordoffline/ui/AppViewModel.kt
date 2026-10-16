@@ -74,6 +74,15 @@ data class DiscoverUi(
     val selectedCount: Int get() = items.count { it.selected }
 }
 
+/** Trạng thái phần "Thư mục lưu file". */
+data class StorageUi(
+    val folder: String? = null,
+    val valid: Boolean = false,
+    val auto: Boolean = true,
+    val busy: Boolean = false,
+    val message: String? = null,
+)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val fetcher = HttpFetcher()
@@ -94,6 +103,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _batch = MutableStateFlow(BatchUi(queue = loadBatch()))
     val batch: StateFlow<BatchUi> = _batch
     private var batchJob: Job? = null
+
+    val backup = StorageBackup(app, store)
+    private val _storage = MutableStateFlow(StorageUi())
+    val storage: StateFlow<StorageUi> = _storage
 
     private val _discover = MutableStateFlow(DiscoverUi())
     val discover: StateFlow<DiscoverUi> = _discover
@@ -206,6 +219,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     song = s.parsed)
             }
             _check.update { it.copy(pageStatus = st, songKey = key) }
+            if (st.state == SaveState.SAVED) withContext(Dispatchers.IO) { afterSaved(key, s.parsed) }
             refreshLibrary()
         }
     }
@@ -222,6 +236,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 store.saveCompact(key, withSource, ChordText.toChordPro(withSource, iso(f.fetchedAtMillis)))
             }
             _check.update { it.copy(compactStatus = st) }
+            if (st.state == SaveState.SAVED) withContext(Dispatchers.IO) { afterSaved(key, song) }
             refreshLibrary()
         }
     }
@@ -407,6 +422,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             Unit
         }
+        if (problems.size < (if (opts.saveCompact) 1 else 0) + (if (opts.savePage) 1 else 0))
+            withContext(Dispatchers.IO) { afterSaved(key, parsed) }
         val info = "${parsed.lyricLineCount} dòng, ${parsed.inlineChordCount} hợp âm · ${f.elapsedMs} ms"
         return if (problems.isEmpty()) BatchOutcome(true, parsed.title, key, info, false)
         else BatchOutcome(false, parsed.title, key, problems.joinToString("; "), false)
@@ -561,6 +578,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         while (total < max) { val n = read(buf, 0, minOf(buf.size, max - total)); if (n < 0) break; out.write(buf, 0, n); total += n }
         return out.toByteArray()
     }
+
+    // =====================================================================
+    // Sau khi lưu: tải ảnh thu nhỏ YouTube (img.youtube.com, để xem offline nhận biết ca sĩ)
+    // và tự sao lưu sang thư mục người dùng chọn (nếu bật). Lỗi ở đây không ảnh hưởng bản đã lưu.
+    // =====================================================================
+    private fun afterSaved(key: String, song: ParsedSong?) {
+        song?.singers?.mapNotNull { it.youtubeId }?.distinct()?.forEach { id ->
+            if (!store.hasThumb(key, id)) {
+                val url = SingerInfo("", null, null, id).thumbnailUrl ?: return@forEach
+                fetcher.fetchImage(url)?.let { bytes -> runCatching { store.saveThumb(key, id, bytes) } }
+            }
+        }
+        if (backup.autoBackup && backup.hasValidFolder()) {
+            runCatching { backup.backupKey(key) }.onFailure { e ->
+                _storage.update { it.copy(message = "Tự sao lưu lỗi ($key): ${e.message}") }
+            }
+        }
+    }
+
+    fun refreshStorage() {
+        viewModelScope.launch {
+            val (name, valid) = withContext(Dispatchers.IO) { backup.folderName() to backup.hasValidFolder() }
+            _storage.update { it.copy(folder = name, valid = valid, auto = backup.autoBackup) }
+        }
+    }
+
+    fun chooseStorageFolder(uri: Uri) {
+        runCatching { backup.setFolder(uri) }
+            .onSuccess { _storage.update { it.copy(message = "Đã chọn thư mục. Bấm \"Sao lưu tất cả\" để chép các bài đã lưu.") }; refreshStorage() }
+            .onFailure { e -> _storage.update { it.copy(message = "Không lấy được quyền thư mục: ${e.message}") } }
+    }
+
+    fun setAutoBackup(v: Boolean) { backup.autoBackup = v; _storage.update { it.copy(auto = v) } }
+
+    fun backupAllNow() = runStorageJob("Đang sao lưu…") {
+        val r = backup.backupAll()
+        "Đã sao lưu ${r.songs} bài (${r.files} file mới/đổi)." + errText(r.errors)
+    }
+
+    fun restoreNow() = runStorageJob("Đang khôi phục…") {
+        val r = backup.restoreAll()
+        "Đã khôi phục ${r.songs} bài (${r.files} file). Bài đã có trong app được giữ nguyên." + errText(r.errors)
+    }
+
+    private fun errText(e: List<String>) = if (e.isEmpty()) "" else " Lỗi ${e.size}: " + e.take(3).joinToString("; ")
+
+    private fun runStorageJob(busyMsg: String, job: () -> String) {
+        if (_storage.value.busy) return
+        if (!backup.hasValidFolder()) { _storage.update { it.copy(message = "Hãy chọn thư mục lưu trước.") }; return }
+        _storage.update { it.copy(busy = true, message = busyMsg) }
+        viewModelScope.launch {
+            val msg = withContext(Dispatchers.IO) { runCatching(job).getOrElse { "Lỗi: ${it.message}" } }
+            _storage.update { it.copy(busy = false, message = msg) }
+            refreshLibrary()
+        }
+    }
+
+    /** Ảnh thu nhỏ đã lưu của một video (null nếu chưa có). */
+    fun thumbFile(key: String, youtubeId: String): File? = store.thumbFile(key, youtubeId).takeIf { it.exists() && it.length() > 0 }
 
     override fun onCleared() {
         // ViewModel bị huỷ (thoát app): mục đang tải quay về "Chờ" để lần sau tiếp tục.

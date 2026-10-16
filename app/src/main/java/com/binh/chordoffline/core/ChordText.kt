@@ -15,6 +15,8 @@ object ChordText {
         d("key", song.tone)
         d("rhythm", song.rhythm)
         d("singer_tones", song.singerTones.joinToString("; ") { "${it.first}: ${it.second}" }.ifBlank { null })
+        d("singers", SingerExtractor.toDirective(song.singers))
+        d("youtube", song.youtubeId)
         d("source", song.sourceUrl)
         d("source_site", "Hợp Âm Việt (hopamviet.vn)")
         d("fetched_at", fetchedAtIso)

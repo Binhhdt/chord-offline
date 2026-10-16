@@ -98,6 +98,9 @@ fun CheckScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                 KV("Điệu", p.rhythm ?: "—")
                 KV("ID", "${p.slugId ?: "—"} / ${p.songId ?: "—"}")
                 KV("Lời", if (p.hasLyrics) "${p.lyricLineCount} dòng, ${p.inlineChordCount} hợp âm inline" else "không có")
+                KV("Ca sĩ / video", if (p.singers.isEmpty()) "không có" else p.singers.joinToString("; ") {
+                    "${it.name}${it.tone?.let { t -> " ($t)" } ?: ""}${if (it.youtubeId != null) " ▶" else ""}" } +
+                    " · ${p.singers.count { it.youtubeId != null }}/${p.singers.size} có video")
             }
         }
         s.missingReason?.let { reason ->

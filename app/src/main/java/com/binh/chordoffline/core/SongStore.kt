@@ -74,7 +74,39 @@ class SongStore(private val root: File) {
 
     fun info(key: String): Map<String, String> = readPropsFile(File(dir(key), "info.properties"))
 
+    // ---------- Ảnh thu nhỏ video YouTube (xem offline để nhận biết ca sĩ) ----------
+    fun thumbFile(key: String, youtubeId: String): File = File(dir(key), "yt_" + youtubeId.filter { it.isLetterOrDigit() || it == '-' || it == '_' } + ".jpg")
+    fun hasThumb(key: String, youtubeId: String) = thumbFile(key, youtubeId).let { it.exists() && it.length() > 0 }
+    fun saveThumb(key: String, youtubeId: String, bytes: ByteArray) {
+        require(bytes.size in 100..2_000_000) { "Ảnh không hợp lệ (${bytes.size} byte)" }
+        writeAtomic(thumbFile(key, youtubeId), bytes)
+    }
+
+    // ---------- Sao lưu / khôi phục (thư mục ngoài do người dùng chọn) ----------
+    /** Danh sách bài (thư mục) đang có. */
+    fun keys(): List<String> = root.listFiles()?.filter { it.isDirectory && hasAny(it.name) }?.map { it.name }?.sorted() ?: emptyList()
+
+    /** Các file của một bài cần sao lưu (bỏ file tạm). */
+    fun filesOf(key: String): List<File> = dir(key).listFiles()?.filter { it.isFile && isBackupName(it.name) }?.sortedBy { it.name } ?: emptyList()
+
+    /**
+     * Nhập một file từ bản sao lưu. Chỉ nhận tên file app tự tạo (chống ghi đè file lạ / đường dẫn ../).
+     * overwrite = false: giữ file đang có trong máy. Trả về true nếu đã ghi.
+     */
+    fun importFile(key: String, name: String, bytes: ByteArray, overwrite: Boolean = false): Boolean {
+        if (!isValidKey(key) || !isBackupName(name)) return false
+        val f = File(dir(key), name)
+        if (f.exists() && !overwrite) return false
+        writeAtomic(f, bytes)
+        return true
+    }
+
     companion object {
+        private val BACKUP_NAMES = setOf("page.html", "page.properties", "song.cho", "compact.properties", "info.properties")
+        private val THUMB_NAME = Regex("^yt_[A-Za-z0-9_\\-]{11}\\.jpg$")
+        fun isBackupName(name: String) = name in BACKUP_NAMES || THUMB_NAME.matches(name)
+        fun isValidKey(key: String) = key.isNotEmpty() && key.length <= 64 && key.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+
         fun slugFromUrl(url: String): String? =
             url.substringBefore('?').substringBefore('#').substringAfterLast('/').removeSuffix(".html").takeIf { it.isNotBlank() }
     }
