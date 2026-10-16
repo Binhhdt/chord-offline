@@ -44,7 +44,7 @@ object SongParser {
             if (spans.size >= 2) spans[0].text().trim() to spans[1].text().trim() else null
         }
 
-        val youtube = Regex("""(?:img\.youtube\.com/vi/|youtube\.com/embed/)([\w-]{11})""")
+        val youtube = Regex("""(?:img\.youtube\.com/vi/|youtube\.com/embed/)([\w\-]{11})""")
             .find(doc.outerHtml())?.groupValues?.get(1)
 
         return ParsedSong(

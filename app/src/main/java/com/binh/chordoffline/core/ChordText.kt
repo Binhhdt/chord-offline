@@ -3,8 +3,9 @@ package com.binh.chordoffline.core
 /** Định dạng lời/hợp âm gọn (ChordPro đơn giản) và tiện ích hiển thị. */
 object ChordText {
 
-    val CHORD = Regex("""\[([^\]\n]{1,16})]""")
-    private val DIRECTIVE = Regex("""^\{([a-z_]+):\s?(.*)}$""")
+    // Lưu ý: regex ICU trên Android bắt buộc escape cả "]" và "}" dùng như ký tự thường.
+    val CHORD = Regex("""\[([^\]\n]{1,16})\]""")
+    private val DIRECTIVE = Regex("""^\{([a-z_]+):\s?(.*)\}$""")
 
     /** Tạo nội dung file .cho: các dòng {key: value} + một dòng trống + lời (giữ dòng trống, hợp âm inline). */
     fun toChordPro(song: ParsedSong, fetchedAtIso: String): String = buildString {
