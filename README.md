@@ -5,6 +5,7 @@ App Android nhỏ dùng để **kiểm tra thực tế trên điện thoại**:
 - nếu có thì lưu bản offline cho mục đích cá nhân.
 
 Từ v0.2.0 app có thêm: hợp âm phía trên tự xuống dòng, chuyển tone, tìm kiếm bài đã lưu và tải nhiều URL (xem mục **Tính năng v0.2.0**).
+Từ v0.3.0 app **lấy được danh sách bài từ trang danh mục** để xem trước và chọn, có nhập file TXT, và không tải lại bài đã lưu (xem mục **Tính năng v0.3.0**).
 
 ## Tình trạng kiểm chứng (16/10/2026)
 
@@ -17,6 +18,7 @@ Từ v0.2.0 app có thêm: hợp âm phía trên tự xuống dòng, chuyển to
 | Lưu 2 bản độc lập | ✅ Lưu nguyên trang (358,5 KB) và bản gọn (1,8 KB), trạng thái riêng từng bản |
 | Biên dịch APK (Compose UI) | ✅ GitHub Actions build thành công |
 | Hợp âm phía trên (v0.1.3, trên điện thoại) | ✅ Hiển thị đúng với bài *Người dưng* (ảnh chụp ngày 16/10). Phiên bản v0.2.0 viết lại cách ngắt dòng, **chưa kiểm tra lại trên máy** |
+| Lấy danh sách từ trang danh mục (v0.3.0) | ✅ Unit test trên JVM và CI đều đạt; build APK thành công. Parser đã chạy thử trên HTML thật của trang bài hát (cùng khung với trang danh mục): loại đúng 7 link ở cột bên `aside`. ⏳ **Chưa quét thử trang danh mục thật trên điện thoại** |
 | Chuyển tone, tìm kiếm, tải nhiều (v0.2.0) | ✅ Unit test trên JVM và CI đều đạt; build APK thành công. ⏳ **Chưa kiểm tra trên điện thoại** |
 | So sánh HTML server với bản lưu từ trình duyệt (v0.1.3, *Người dưng*, cùng bài W8IUDI0D) | ✅ Lời **giống hệt** (53 dòng, 64 hợp âm). Server 296,4 KB, 510 ms |
 
@@ -60,12 +62,13 @@ app/src/main/java/com/binh/chordoffline/
 │   ├── SongStore.kt      # lưu 2 bản độc lập, mỗi bản có trạng thái riêng; kèm ca sĩ/nhạc sĩ/tone để tìm kiếm
 │   ├── Transpose.kt      # chuyển tone theo bán cung + TransposeState (hoàn tác)
 │   ├── LibrarySearch.kt  # tìm kiếm không dấu, sắp xếp
-│   └── BatchQueue.kt     # hàng đợi tải nhiều: thêm/bỏ trùng/trạng thái/lưu ra file
+│   ├── BatchQueue.kt     # hàng đợi tải nhiều: thêm/bỏ trùng/trạng thái/lưu ra file
+│   └── ListingParser.kt  # lấy link bài từ trang danh mục + ListingPolicy + Discovery (giới hạn trang, chống vòng lặp)
 ├── net/HttpFetcher.kt    # OkHttp: status, URL sau redirect, Content-Type, kích thước, thời gian
 ├── ui/                   # Compose: Kiểm tra URL, Đã lưu (tìm kiếm), Tải nhiều, trình xem (chuyển tone)
 └── MainActivity.kt
 app/src/test/.../core/        # unit test, dùng HTML/lời giả (không chứa nội dung có bản quyền)
-    CoreTest, ChordWrapTest, TransposeTest, LibraryAndBatchTest, RegexAndroidCompatTest
+    CoreTest, ChordWrapTest, TransposeTest, LibraryAndBatchTest, ListingTest, RegexAndroidCompatTest
 ```
 
 ### Hai chế độ lưu
@@ -120,6 +123,55 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
    - **Bỏ mục xong** và **Xoá hết**.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
+
+## Tính năng v0.3.0: lấy danh sách từ trang danh mục
+
+### Cấu trúc HTML thực tế (kiểm tra ngày 16/10/2026)
+Mình đã kiểm tra trang `https://hopamviet.vn/chord/category/3/nhac-tre.html` và file HTML thật đã lưu của một trang bài hát. Hai loại trang dùng chung khung giao diện:
+
+| Phần | Cấu trúc | App xử lý |
+|---|---|---|
+| Danh sách chính | `div.lg:col-span-8` chứa các thẻ `a.song-card`, **30 bài/trang** | Chỉ lấy link `/chord/song/<slug>/<ID>.html` ở đây |
+| Cột bên "Bài hát hot"/"Thịnh hành" | `aside.lg:col-span-4` (10 bài, có thể trùng với danh sách chính) | **Bỏ qua** |
+| Menu, chân trang, hộp thoại | `header`, `nav`, `footer`, id chứa `modal` | **Bỏ qua** |
+| Phân trang | `?page=N` đánh số **từ 0** (trang "2" là `?page=1`). Danh mục Nhạc Trẻ có 636 trang (khoảng 19.080 bài) | Chỉ theo link có `page` = trang hiện tại + 1 của **cùng danh sách** |
+| Tên bài / ca sĩ | `.font-bold` / dòng `text-[13px]` → `span.truncate` (bỏ nhãn "HOT") | Hiển thị ở phần xem trước |
+
+Nếu không tìm thấy cột chính, app chuyển sang chế độ dự phòng: lấy toàn trang nhưng vẫn loại `aside`, `nav`, `header` và `footer`, đồng thời ghi cảnh báo "⚠ không thấy cột chính" vào nhật ký quét.
+
+### Trang được hỗ trợ
+- **Được hỗ trợ:**
+  - `/chord/category/…` (thể loại), `/chord/composer/…` (nhạc sĩ), `/chord/singer/…` (ca sĩ);
+  - `/chord/rhythm/…` (điệu), `/chord/hot` (bài hot), `/chord/latest` (bài mới).
+- **Không hỗ trợ trang tìm kiếm `/chord/search`**, vì robots.txt của Hợp Âm Việt chặn đường dẫn này. App báo rõ lý do và gợi ý dùng trang thể loại, nhạc sĩ hoặc ca sĩ thay thế.
+
+### Cách dùng (tab Tải nhiều → "Từ trang danh mục")
+1. Tick ô xác nhận quyền.
+2. Dán link trang danh sách và chọn **số trang tối đa**: mặc định 2, tối đa 20, khoảng 30 bài mỗi trang.
+3. Bấm **Quét danh sách**. App tải các trang **tuần tự**, nghỉ 3 giây giữa các trang, và ghi nhật ký cho từng trang, ví dụ `Trang 1: 30 bài (30 mới) · HTTP 200 · 450 ms · bỏ 10 link ngoài danh sách chính`. Có nút **Dừng quét**.
+4. App **chỉ lấy link, chưa tải bài nào**. Phần **xem trước** liệt kê tên bài và ca sĩ, đánh dấu bài "✓ đã lưu" hoặc "trong hàng đợi"; các bài này được bỏ chọn sẵn. Có các nút **Chọn tất cả**, **Bỏ chọn** và **Chỉ bài chưa lưu**; chạm vào từng bài để chọn hoặc bỏ chọn.
+5. Bấm **Xác nhận & tải N bài**. App thêm các bài đã chọn vào hàng đợi (bỏ link trùng) và bắt đầu tải.
+
+### Giới hạn phạm vi và chống vòng lặp
+App dừng quét khi gặp **một trong các trường hợp** sau, và ghi lý do vào nhật ký:
+- đủ số trang đã chọn (tối đa 20 trang);
+- đủ 600 bài trong một lần quét;
+- hết trang, tức không còn link sang trang kế tiếp;
+- trang vừa quét **không có bài mới**;
+- link trang kế tiếp trỏ về **trang đã quét**: app nhận biết `nhac-tre.html`, `nhac-tre?page=0` và `www.` là cùng một trang.
+
+App **không bao giờ đi theo link sang danh sách khác**, nên không có chuyện quét toàn bộ website.
+
+### Khi bị chặn hoặc không lấy được link
+- Website trả HTTP 403, 429, 503 hoặc trang xác minh chống bot: app **dừng quét ngay** và báo rõ, không thử vượt qua.
+- Trang đầu không có link bài nào: app báo đây không phải trang danh sách, hoặc cấu trúc trang đã thay đổi.
+- robots.txt không cho phép đường dẫn: app báo và dừng.
+
+### Hàng đợi (cải tiến)
+- **Mặc định lưu cả nguyên trang và bản gọn** cho mỗi bài. Vẫn chọn lại được ở mục "Kiểu lưu".
+- **Không tải lại bài đã lưu thành công.** Trước khi gửi request, app kiểm tra bài đã có đủ các bản được chọn chưa. Nếu đủ rồi, bài được đánh dấu "Xong · Đã có trong máy — bỏ qua" và app **không gửi request nào**.
+- Tiến độ hiện tổng số bài, số thành công, thất bại, đang chờ và đã huỷ. Các nút tạm dừng, tiếp tục, huỷ, thử lại lỗi giữ nguyên như v0.2.0. Trạng thái vẫn được lưu vào `files/batch_queue.tsv`.
+- Chế độ **Dán link / TXT** giữ nguyên, và có thêm nút **Nhập file TXT**: mỗi dòng một link, tối đa 1 MB, dòng bắt đầu bằng `#` được bỏ qua.
 
 ## Build APK bằng GitHub Actions
 
@@ -177,6 +229,15 @@ Muốn build trên máy tính: cài Android Studio (JDK 17, SDK 35), mở thư m
 | Lưu nguyên trang / bản gọn | |
 | Mở offline (chế độ máy bay) | |
 
+### Kiểm tra v0.3.0 trên điện thoại
+1. Ở tab Tải nhiều → "Từ trang danh mục", để URL mặc định (Nhạc Trẻ) và chọn 2 trang, rồi bấm **Quét danh sách**:
+   - nhật ký phải có 2 dòng, mỗi trang khoảng 30 bài, và có dòng "bỏ … link ngoài danh sách chính";
+   - danh sách xem trước khoảng 60 bài, **không có** các bài của cột "Bài hát hot".
+2. Bấm **Bỏ chọn**, rồi chọn 2–3 bài và bấm **Xác nhận & tải**. Kiểm tra mỗi bài trong tab Đã lưu có đủ 2 bản.
+3. Quét lại cùng trang: các bài vừa tải phải hiện "✓ đã lưu" và được bỏ chọn sẵn. Bấm "Chọn tất cả" rồi tải lại: các bài đó phải hiện "Đã có trong máy — bỏ qua".
+4. Dán `https://hopamviet.vn/chord/search?q=abc`: app phải báo bị robots.txt chặn.
+5. Nhập một file TXT có vài link bài hát.
+
 ### Kiểm tra v0.2.0 trên điện thoại
 1. **Hợp âm phía trên**: mở bài *Người dưng*, chọn "Hợp âm phía trên", rồi bấm A+ nhiều lần. Kiểm tra hợp âm vẫn nằm đúng trên chữ ở mọi cỡ chữ, và dòng trống trước `T-ĐK:` vẫn còn.
 2. **Chuyển tone**: bấm +½ hai lần, tone phải hiện `Am → Bm (+2)` và hợp âm `[G]` thành `[A]`. Bấm **Hoàn tác** một lần thì về +1, bấm **Về gốc** thì về Am. Đóng rồi mở lại bài, hợp âm phải là bản gốc.
@@ -194,3 +255,5 @@ Muốn build trên máy tính: cài Android Studio (JDK 17, SDK 35), mở thư m
 - Chỉ đọc khối `#lyric-version-0`, tức phiên bản lời đầu tiên.
 - Chuyển tone không được lưu lại sau khi đóng bài (theo yêu cầu "chỉ đổi hiển thị").
 - Hàng đợi tải nhiều không chạy nền khi app đã đóng.
+- Quét danh mục phụ thuộc bố cục hiện tại của website (`lg:col-span-8`, `aside`, `?page=`). Nếu website đổi giao diện, nhật ký quét sẽ báo "không thấy cột chính" hoặc "không tìm thấy link".
+- Không hỗ trợ trang tìm kiếm, vì robots.txt của website chặn.
