@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.binh.chordoffline.core.Version
 import com.binh.chordoffline.ui.AppViewModel
@@ -35,6 +36,12 @@ private data class Viewing(val key: String, val version: Version)
 private fun AppRoot(vm: AppViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var viewing by remember { mutableStateOf<Viewing?>(null) }
+
+    // Giữ màn hình sáng khi đang quét / tải / chạy tự động (ở bất kỳ tab nào) để Android không tạm dừng app
+    val busy = vm.batch.collectAsState().value.running || vm.discover.collectAsState().value.running ||
+        vm.auto.collectAsState().value.active
+    val view = LocalView.current
+    DisposableEffect(busy) { view.keepScreenOn = busy; onDispose { view.keepScreenOn = false } }
 
     val v = viewing
     if (v != null) {

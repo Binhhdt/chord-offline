@@ -82,6 +82,16 @@ data class DiscoverUi(
     val resumePage: Int? get() = resumeUrl?.let { ListingPolicy.pageIndex(it) + 1 }
 }
 
+/** Chế độ tự động: quét N trang -> thêm bài chưa lưu -> tải xong -> quét tiếp, lặp tới hết danh mục. */
+data class AutoUi(
+    val active: Boolean = false,
+    val round: Int = 0,
+    val phase: String = "",
+    val totalQueued: Int = 0,
+    val message: String? = null,
+    val isError: Boolean = false,
+)
+
 /** Trạng thái phần "Thư mục lưu file". */
 data class StorageUi(
     val folder: String? = null,
@@ -514,7 +524,90 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         discoverJob = viewModelScope.launch { runDiscover(from, d.maxPages) }
     }
 
+    // =====================================================================
+    // TỰ ĐỘNG QUÉT & TẢI ĐẾN HẾT — vẫn tuần tự, vẫn nghỉ giữa các request, vẫn dừng khi website giới hạn.
+    // =====================================================================
+    private val _auto = MutableStateFlow(AutoUi())
+    val auto: StateFlow<AutoUi> = _auto
+    private var autoJob: Job? = null
+
+    fun autoStart() {
+        val d = _discover.value
+        when {
+            _auto.value.active || d.running || _batch.value.running -> return
+            !_check.value.confirmed -> { _auto.update { it.copy(message = "Hãy tick xác nhận quyền lưu trước.", isError = true) }; return }
+            !_batch.value.queue.saveCompact && !_batch.value.queue.savePage -> {
+                _auto.update { it.copy(message = "Chọn ít nhất một kiểu lưu.", isError = true) }; return }
+        }
+        ListingPolicy.validate(d.url)?.let { why -> _auto.update { it.copy(message = why, isError = true) }; return }
+        val start = d.resumeUrl ?: if (d.reachedEnd) null else BatchQueue.normalizeUrl(d.url.trim())
+        if (start == null) { _auto.update { it.copy(message = "Danh mục này đã quét tới trang cuối rồi.", isError = false) }; return }
+        _auto.value = AutoUi(active = true, phase = "Bắt đầu…")
+        autoJob = viewModelScope.launch { runAuto(start) }
+    }
+
+    /** Dừng tự động: dừng quét ngay; nếu đang tải thì tạm dừng sau bài hiện tại (các bài chờ vẫn giữ để tải sau). */
+    fun autoStop() {
+        autoJob?.cancel(); autoJob = null      // huỷ luôn đợt quét đang chạy bên trong vòng tự động
+        if (_discover.value.running) _discover.update { it.copy(running = false, waitSeconds = 0, currentPage = null,
+            resumeUrl = discoverNext, message = "Đã dừng quét.", isError = false) }
+        if (_batch.value.running) batchPause()
+        _auto.update { it.copy(active = false, phase = "", message = "Đã dừng tự động. Bấm lại để chạy tiếp từ chỗ đã dừng.", isError = false) }
+    }
+
+    private suspend fun runAuto(startUrl: String) {
+        var from: String? = startUrl
+        var msg: String? = null
+        var err = false
+        try {
+            while (from != null) {
+                val round = _auto.value.round + 1
+                val startPage = ListingPolicy.pageIndex(from) + 1
+                _auto.update { it.copy(round = round, phase = "Vòng $round: quét từ trang $startPage") }
+                // 1) quét một đợt trang (danh sách xem trước làm mới mỗi vòng cho nhẹ)
+                _discover.update { it.copy(running = true, items = emptyList(), message = null, isError = false, resumeUrl = null,
+                    log = (it.log + "— Tự động vòng $round: quét ${it.maxPages} trang từ trang $startPage —").takeLast(60)) }
+                runDiscover(from, _discover.value.maxPages)
+                val d = _discover.value
+                if (d.isError) { msg = "Dừng tự động: " + (d.message ?: "lỗi khi quét"); err = true; break }
+
+                // 2) thêm bài chưa lưu & chưa trong hàng đợi, rồi tải hết
+                val urls = d.items.filter { it.selected }.map { it.song.url }
+                if (urls.isNotEmpty()) {
+                    val r = batchAdd(urls.joinToString("\n"))
+                    _auto.update { it.copy(totalQueued = it.totalQueued + r.added, phase = "Vòng $round: tải ${r.added} bài mới") }
+                }
+                if (_batch.value.queue.hasPending) {
+                    batchStart()
+                    delay(300)
+                    while (_batch.value.running) {
+                        val q = _batch.value.queue
+                        _auto.update { it.copy(phase = "Vòng $round: đang tải ${q.finished}/${q.total}") }
+                        delay(1000)
+                    }
+                    if (_batch.value.queue.hasPending) {          // bị tạm dừng / website giới hạn
+                        msg = "Dừng tự động: " + (_batch.value.message ?: "hàng đợi đã dừng giữa chừng")
+                        err = _batch.value.message?.startsWith("Website") == true
+                        break
+                    }
+                }
+                // 3) quét tiếp hay đã hết
+                val after = _discover.value
+                if (after.reachedEnd) { msg = "✅ Đã tới trang cuối (trang ${after.lastScanned}${after.totalPages?.let { "/$it" } ?: ""}) — hoàn tất."; break }
+                from = after.resumeUrl
+                if (from == null) { msg = "Dừng tự động: " + (after.message ?: "không còn trang để quét tiếp."); break }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            msg = "Lỗi chế độ tự động: ${e.javaClass.simpleName}: ${e.message}"; err = true
+        } finally {
+            if (_auto.value.active) _auto.update { it.copy(active = false, phase = "", message = msg, isError = err) }
+        }
+    }
+
     fun discoverStop() {
+        if (_auto.value.active) { autoStop(); return }
         discoverJob?.cancel(); discoverJob = null
         _discover.update { it.copy(running = false, waitSeconds = 0, currentPage = null, resumeUrl = discoverNext,
             message = "Đã dừng quét. Danh sách tìm được đến lúc dừng vẫn được giữ.", isError = false) }

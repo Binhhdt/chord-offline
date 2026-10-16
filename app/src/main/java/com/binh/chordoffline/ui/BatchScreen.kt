@@ -39,6 +39,8 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
     val d by vm.discover.collectAsState()
     val check by vm.check.collectAsState()
     val progress by vm.progress.collectAsState()
+    val auto by vm.auto.collectAsState()
+
     var mode by rememberSaveable { mutableIntStateOf(0) }
     var input by rememberSaveable { mutableStateOf("") }
     var showPreview by rememberSaveable { mutableStateOf(true) }
@@ -70,6 +72,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
 
         if (mode == 0) {
             discoverScanCard(vm, d, b.running)
+            item { AutoCard(vm, auto, d, b, check.confirmed) }
             if (progress.all.isNotEmpty()) item { ScanHistoryCard(vm, progress, d.url) }
             item { SaveOptionsCard(vm, b) }
             if (d.items.isNotEmpty()) item { PreviewHeader(vm, d, b.running, showPreview) { showPreview = !showPreview } }
@@ -322,5 +325,27 @@ private fun ScanHistoryCard(vm: AppViewModel, book: ScanProgressBook, currentUrl
         }
         Text("Chọn một danh mục rồi bấm \"Quét tiếp\" ở trên. Tiến độ được lưu trong app và sao lưu cùng thư mục lưu file.",
             style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/** Nút chạy tự động: quét N trang → tải bài chưa lưu → quét tiếp… tới trang cuối. */
+@Composable
+private fun AutoCard(vm: AppViewModel, a: AutoUi, d: DiscoverUi, b: BatchUi, confirmed: Boolean) {
+    SectionCard("Tự động quét & tải đến hết") {
+        Text("Lặp lại: quét ${d.maxPages} trang → tự thêm bài chưa lưu → tải xong → quét tiếp. Dừng khi tới trang cuối, " +
+            "khi bạn bấm Dừng, hoặc khi website giới hạn. Màn hình được giữ sáng trong lúc chạy; nên cắm sạc.",
+            style = MaterialTheme.typography.bodySmall)
+        if (a.active) {
+            Text("Đang chạy · ${a.phase}", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+            Text("Đã thêm ${a.totalQueued} bài qua ${a.round} vòng", style = MaterialTheme.typography.bodySmall)
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            OutlinedButton(onClick = vm::autoStop, modifier = Modifier.fillMaxWidth()) { Text("Dừng tự động") }
+        } else {
+            val from = d.resumePage?.let { "từ trang $it" } ?: if (d.reachedEnd) "đã hết trang" else "từ trang 1"
+            Button(onClick = vm::autoStart, enabled = confirmed && !d.running && !b.running && !d.reachedEnd,
+                modifier = Modifier.fillMaxWidth()) { Text("▶ Tự động quét & tải đến hết ($from)") }
+        }
+        a.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+            color = if (a.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }

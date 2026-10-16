@@ -129,6 +129,23 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.6.1: tự động quét & tải đến hết
+
+- Tab Tải nhiều → Từ trang danh mục có nút **"▶ Tự động quét & tải đến hết (từ trang X)"**. App tự lặp các bước sau:
+  1. quét N trang (theo ô "Số trang tối đa");
+  2. tự thêm các bài **chưa lưu** vào hàng đợi;
+  3. tải hết các bài đó;
+  4. quét tiếp N trang sau.
+- App tự dừng khi gặp một trong các trường hợp sau:
+  - **tới trang cuối**, báo "✅ Đã tới trang cuối — hoàn tất";
+  - bạn bấm **Dừng tự động** (hoặc Dừng quét / Tạm dừng);
+  - website giới hạn (403/429/503 hoặc trang xác minh);
+  - gặp lỗi khi quét.
+- Vẫn tải **tuần tự** và **nghỉ giữa các request** như khi tải bằng tay, không tải song song.
+- Tiến độ quét được lưu sau mỗi trang. Dừng lúc nào thì bấm lại nút tự động là chạy tiếp từ đúng trang đó; bài đang chờ trong hàng đợi vẫn được giữ.
+- **Giữ màn hình sáng** trong lúc quét, tải hoặc chạy tự động, ở bất kỳ tab nào, để Android không tạm dừng app. Nên cắm sạc.
+- Danh sách xem trước được làm mới ở mỗi vòng, nhật ký chỉ giữ 60 dòng gần nhất, để app không nặng khi chạy lâu.
+
 ## v0.6.0: giao diện & icon mẫu D "Tối giản xanh"
 
 - **Giao diện mẫu D**, thay cho mẫu B "Sân khấu đêm" của v0.5.0:
