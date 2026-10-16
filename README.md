@@ -16,7 +16,16 @@ App chưa được chạy thử trên thiết bị thật. Kết quả tải tr�
 | Lời/hợp âm trong HTML server | ✅ **Có sẵn, không cần JavaScript**: đủ 5 selector; 25 dòng, 42 hợp âm inline (khớp 42 `span.chord`) |
 | Lưu 2 bản độc lập | ✅ Lưu nguyên trang (358,5 KB) và bản gọn (1,8 KB), trạng thái riêng từng bản |
 | Biên dịch APK (Compose UI) | ✅ GitHub Actions build thành công |
-| So sánh với file HTML đã lưu trên điện thoại / mở offline ở chế độ máy bay | ⏳ Chưa kiểm tra |
+| So sánh HTML server với bản lưu từ trình duyệt (v0.1.3, *Người dưng*, cùng bài W8IUDI0D) | ✅ Lời **giống hệt** (53 dòng, 64 hợp âm). Server 296,4 KB, 510 ms |
+
+### Kết quả so sánh: server render và JavaScript (16/10/2026)
+
+| Có sẵn trong HTML server | Chỉ có sau JavaScript (bản lưu từ trình duyệt) |
+|---|---|
+| `#lyricBox`, `#lyric-version-0` (lời + `span.chord`), tên bài, tone, ID bài, điệu, tone ca sĩ, thumbnail YouTube, 32 bài liên quan | Danh sách hợp âm sử dụng `#show_tab [chord]`, sơ đồ hợp âm (jtab, SVG), quảng cáo đã nạp, 17 iframe, trình phát YouTube |
+
+Thẻ `<script>`: server có 30, bản lưu có 0. Đây là do trình duyệt bỏ script khi lưu trang, không phải do JavaScript tạo ra.
+Kết luận: mọi dữ liệu cần cho bản lời/hợp âm gọn đều có trong HTML server. Danh sách hợp âm sử dụng có thể tự tính từ các `[..]` inline nếu cần.
 
 Lỗi đã gặp và đã sửa: v0.1.0–0.1.1 crash do `PatternSyntaxException`. Regex ICU trên Android không chấp nhận `}`/`]` chưa escape. Lỗi đã được sửa ở v0.1.2, kèm test `RegexAndroidCompatTest` để chặn lỗi này tái diễn.
 
