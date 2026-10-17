@@ -126,8 +126,10 @@ data class BatchQueue(
             var s = u.trim().substringBefore('#')
             if (s.startsWith("http://", ignoreCase = true)) s = "https://" + s.substring(7)
             if (!s.contains("://")) s = "https://$s"
-            return s.replaceFirst(Regex("""^https://www\.""", RegexOption.IGNORE_CASE), "https://")
+            return s.replaceFirst(WWW, "https://")
         }
+
+        private val WWW = Regex("""^https://www\.""", RegexOption.IGNORE_CASE)
 
         fun dedupeKey(u: String) = normalizeUrl(u).lowercase().trimEnd('/')
 

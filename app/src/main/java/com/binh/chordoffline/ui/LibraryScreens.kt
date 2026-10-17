@@ -67,15 +67,22 @@ import com.binh.chordoffline.core.Version
 @Composable
 fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) -> Unit) {
     val songs by vm.library.collectAsState()
-    LaunchedEffect(Unit) { vm.refreshLibrary(); vm.refreshStorage() }
+    LaunchedEffect(Unit) { vm.refreshLibraryIfNeeded(); vm.refreshStorage() }
     var confirmDelete by remember { mutableStateOf<Pair<String, Version?>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var applied by rememberSaveable { mutableStateOf("") }        // truy vấn đang lọc danh sách
     var showSuggest by rememberSaveable { mutableStateOf(false) }
     var field by rememberSaveable { mutableStateOf(SearchField.ALL) }
     var sort by rememberSaveable { mutableStateOf(SortMode.RECENT) }
-    val shown = remember(songs, applied, field, sort) { LibrarySearch.filter(songs, applied, field, sort) }
-    val suggestions = remember(songs, query) { LibrarySearch.suggest(songs, query) }
+    // Lọc/sắp xếp/gợi ý chạy ở luồng nền (thư viện có thể hàng chục nghìn bài — chạy trên luồng giao diện sẽ làm app đơ).
+    val shown by produceState(initialValue = songs, songs, applied, field, sort) {
+        value = withContext(Dispatchers.Default) { LibrarySearch.filter(songs, applied, field, sort) }
+    }
+    val suggestions by produceState(initialValue = emptyList<SavedSong>(), songs, query) {
+        if (query.isBlank()) { value = emptyList(); return@produceState }
+        kotlinx.coroutines.delay(200)          // đợi ngừng gõ một chút rồi mới tìm
+        value = withContext(Dispatchers.Default) { LibrarySearch.suggest(songs, query) }
+    }
     fun openSong(s: SavedSong) = onOpen(s.key, if (s.compact.state == SaveState.SAVED) Version.COMPACT else Version.PAGE)
     fun runSearch() { applied = query; showSuggest = false }
 

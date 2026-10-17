@@ -129,6 +129,19 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.9.1: sửa lỗi app đơ ("isn't responding") khi thư viện rất lớn
+
+**Hiện tượng:** thư viện ~15.000 bài, đang tải nền. Mở tab "Đã lưu" rồi gõ tìm kiếm thì app đơ và Android báo "Chord Offline isn't responding".
+
+**Nguyên nhân:**
+- Mỗi lần làm mới, `store.list()` đọc lại **toàn bộ** thư viện, khoảng 5–6 file mỗi bài, tức gần 90.000 lần đọc file. Khi đang tải, việc này chạy mỗi 5 giây và không chờ lượt trước xong, nên các lượt chồng lên nhau và làm máy quá tải.
+- Lọc, sắp xếp và gợi ý tìm kiếm chạy ngay trên luồng giao diện. Mỗi lần gõ, app bỏ dấu lại cho hàng chục nghìn chuỗi.
+
+**Cách sửa:**
+- Đọc toàn bộ thư viện chỉ **một lượt tại một thời điểm**. Gọi thêm trong lúc đang đọc thì app đọc lại đúng một lần sau đó.
+- Khi tải, lưu một bài, xoá bài hay mở lại tab: app chỉ đọc **các bài vừa thay đổi** (`SongStore.load(key)`) rồi ghép vào danh sách sẵn có.
+- Lọc, sắp xếp và gợi ý chạy ở **luồng nền**. Gợi ý đợi ngừng gõ 0,2 giây rồi mới tìm. Bản bỏ dấu được tính một lần rồi dùng lại (bộ nhớ đệm). Test: 5 lượt tìm trên 20.000 bài phải xong dưới 5 giây trên JVM.
+
 ## v0.9.0: quét danh mục nhanh hơn (A + C)
 
 **Vì sao quét chậm:** website trả mỗi trang danh mục trong khoảng 0,3–0,6 giây, nhưng app tốn thêm thời gian ở mấy chỗ sau:

@@ -115,4 +115,21 @@ class SingerAndBackupTest {
             assertThrows(IllegalArgumentException::class.java) { dst.saveThumb("K1", "AAAAAAAAAA1", ByteArray(3)) }
         } finally { a.deleteRecursively(); b.deleteRecursively() }
     }
+
+    @Test fun searchStaysFastWithLargeLibrary() {
+        val none = VersionStatus.NONE
+        val songs = (1..20_000).map { i ->
+            SavedSong("K$i", "Bài hát số $i Người dưng ${i % 97}", null, none, none,
+                composers = "Nhạc sĩ ${i % 300}", singers = "Ca sĩ Đàm ${i % 500}")
+        }
+        LibrarySearch.filter(songs, "", SearchField.ALL, SortMode.TITLE)   // làm nóng bộ nhớ đệm bỏ dấu
+        val t0 = System.nanoTime()
+        repeat(5) { k ->
+            LibrarySearch.suggest(songs, "nguoi dung ${k}")
+            LibrarySearch.filter(songs, "dam", SearchField.ALL, SortMode.TITLE)
+        }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("5 lượt tìm trên 20.000 bài mất $ms ms", ms < 5_000)
+        assertEquals("nguoi dung", LibrarySearch.fold("Người Dưng"))
+    }
 }

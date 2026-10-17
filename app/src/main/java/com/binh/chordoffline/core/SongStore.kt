@@ -169,22 +169,27 @@ class SongStore(private val root: File) {
         return VersionStatus(state, p["savedAt"]?.toLongOrNull(), if (file.exists()) file.length() else null, p["lastError"])
     }
 
-    fun list(): List<SavedSong> = (root.listFiles()?.filter { it.isDirectory } ?: emptyList()).mapNotNull { d ->
-        val key = d.name
+    fun list(): List<SavedSong> = (root.listFiles()?.filter { it.isDirectory } ?: emptyList())
+        .mapNotNull { d -> load(d.name) }.sortedByDescending { it.lastSavedMillis }
+
+    /** Đọc thông tin một bài (null nếu chưa có bản nào được lưu) — dùng để cập nhật thư viện từng phần. */
+    fun load(key: String): SavedSong? {
+        val d = dir(key)
+        if (!d.isDirectory) return null
         val page = status(key, Version.PAGE)
         val compact = status(key, Version.COMPACT)
-        if (page.state == SaveState.NOT_SAVED && compact.state == SaveState.NOT_SAVED) return@mapNotNull null
+        if (page.state == SaveState.NOT_SAVED && compact.state == SaveState.NOT_SAVED) return null
         val info = readPropsFile(File(d, "info.properties"))
         // Bài lưu bằng bản cũ chưa có composer/singers trong info -> đọc từ phần đầu file .cho
         val cho = if (info["composer"] == null && compact.state == SaveState.SAVED)
             runCatching { ChordText.parseChordPro(File(d, Version.COMPACT.dataFile).readText()).meta }.getOrNull() else null
-        SavedSong(
+        return SavedSong(
             key, info["title"]?.ifBlank { null } ?: cho?.get("title") ?: key, info["sourceUrl"]?.ifBlank { null }, page, compact,
             composers = (info["composer"] ?: cho?.get("composer"))?.ifBlank { null },
             singers = (info["singers"] ?: cho?.get("singer_tones")?.let(::singerNames))?.ifBlank { null },
             tone = (info["key"] ?: cho?.get("key"))?.ifBlank { null },
         )
-    }.sortedByDescending { it.lastSavedMillis }
+    }
 
     private fun singerNames(singerTones: String) =
         singerTones.split(";").map { it.trim().substringBeforeLast(":").trim() }.filter { it.isNotEmpty() }.joinToString(", ")

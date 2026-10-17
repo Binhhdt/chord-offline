@@ -36,12 +36,13 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
 
     // ---- Bộ nhớ đệm thư mục: DocumentFile.findFile() liệt kê LẠI toàn bộ thư mục mỗi lần gọi
     // (gần 2000 thư mục bài -> rất chậm). Liệt kê một lần, giữ bảng tên -> thư mục để tra nhanh.
-    private var cachedApp: DocumentFile? = null
-    private var cachedTree: Uri? = null
-    private var childDirs: MutableMap<String, DocumentFile>? = null
-    private var childFiles: MutableMap<String, DocumentFile>? = null
+    @Volatile private var cachedApp: DocumentFile? = null
+    @Volatile private var cachedTree: Uri? = null
+    @Volatile private var childDirs: MutableMap<String, DocumentFile>? = null
+    @Volatile private var childFiles: MutableMap<String, DocumentFile>? = null
 
-    @Synchronized fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null; childFiles = null }
+    /** Không khoá: có thể gọi từ luồng giao diện (chọn thư mục) trong lúc sao lưu nền đang chạy. */
+    fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null; childFiles = null }
 
     private fun cachedAppDir(): DocumentFile {
         val t = treeUri

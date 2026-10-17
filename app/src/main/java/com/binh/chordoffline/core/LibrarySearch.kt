@@ -11,11 +11,19 @@ object LibrarySearch {
     private val MARKS = Regex("""\p{Mn}+""")
     private val SPACES = Regex("""\s+""")
 
+    /** Bộ nhớ đệm bản bỏ dấu: thư viện hàng chục nghìn bài -> không tính lại mỗi lần gõ/sắp xếp. */
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private const val CACHE_MAX = 200_000
+
     /** "Người Dưng" -> "nguoi dung"; "Đ/đ" -> "d". */
     fun fold(s: String?): String {
         if (s.isNullOrBlank()) return ""
+        cache[s]?.let { return it }
         val n = Normalizer.normalize(s, Normalizer.Form.NFD).replace(MARKS, "")
-        return n.replace('đ', 'd').replace('Đ', 'd').lowercase().replace(SPACES, " ").trim()
+        val r = n.replace('đ', 'd').replace('Đ', 'd').lowercase().replace(SPACES, " ").trim()
+        if (cache.size > CACHE_MAX) cache.clear()
+        cache[s] = r
+        return r
     }
 
     private fun fields(s: SavedSong, f: SearchField): String = when (f) {
@@ -52,6 +60,8 @@ object LibrarySearch {
             val t = fold(s.title)
             return when { t.startsWith(q) -> 0; t.contains(q) -> 1; else -> 2 }
         }
-        return filter(songs, query, SearchField.ALL, SortMode.TITLE).sortedBy { rank(it) }.take(limit)
+        // Lọc trước (không sắp xếp cả thư viện), rồi chỉ sắp xếp các bài khớp theo hạng + tên.
+        val hits = filter(songs, query, SearchField.ALL, SortMode.RECENT)
+        return hits.sortedWith(compareBy<SavedSong>({ rank(it) }, { fold(it.title) })).take(limit)
     }
 }

@@ -284,7 +284,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             _check.update { it.copy(pageStatus = st, songKey = key) }
             if (st.state == SaveState.SAVED) withContext(Dispatchers.IO) { afterSaved(key, s.parsed) }
-            refreshLibrary()
+            libraryChanged(key); applyLibraryChanges()
         }
     }
 
@@ -301,7 +301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             _check.update { it.copy(compactStatus = st) }
             if (st.state == SaveState.SAVED) withContext(Dispatchers.IO) { afterSaved(key, song) }
-            refreshLibrary()
+            libraryChanged(key); applyLibraryChanges()
         }
     }
 
@@ -313,14 +313,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Đọc lại toàn bộ thư viện. Chỉ một lượt chạy tại một thời điểm: gọi lúc đang đọc thì đánh dấu đọc lại
+     * MỘT lần sau đó (trước đây các lượt chồng lên nhau khi thư viện có hàng chục nghìn bài -> app đơ).
+     */
     fun refreshLibrary() {
-        viewModelScope.launch { _library.value = withContext(Dispatchers.IO) { store.list() } }
+        synchronized(libLock) {
+            if (libFullRunning) { libFullAgain = true; return }
+            libFullRunning = true
+        }
+        viewModelScope.launch {
+            try {
+                while (true) {
+                    val before = synchronized(libLock) { libChanged.toSet() }
+                    val list = withContext(Dispatchers.IO) { store.list() }
+                    val again = synchronized(libLock) {
+                        _library.value = list
+                        libChanged.removeAll(before)   // đã nằm trong lượt đọc toàn bộ; bài lưu trong lúc đọc vẫn được ghép sau
+                        val a = libFullAgain; libFullAgain = false; a
+                    }
+                    if (!again) break
+                }
+            } finally {
+                synchronized(libLock) { libFullRunning = false }
+            }
+        }
+    }
+
+    private val libLock = Any()
+    private var libFullRunning = false
+    private var libFullAgain = false
+    private val libChanged = LinkedHashSet<String>()
+
+    /** Mở tab "Đã lưu": lần đầu đọc toàn bộ; các lần sau chỉ ghép các bài vừa thay đổi (không đọc lại 15.000 bài). */
+    fun refreshLibraryIfNeeded() {
+        if (_library.value.isEmpty()) refreshLibrary() else viewModelScope.launch { applyLibraryChanges() }
+    }
+
+    /** Ghi nhận bài vừa lưu; thư viện được cập nhật từng phần (chỉ đọc các bài này) theo nhịp. */
+    private fun libraryChanged(key: String) = synchronized(libLock) { libChanged.add(key) }
+
+    /** Đọc các bài vừa thay đổi rồi ghép vào danh sách hiện có (bài mới lưu lên đầu, đúng thứ tự "Mới lưu"). */
+    private suspend fun applyLibraryChanges() {
+        val keys = synchronized(libLock) { if (libFullRunning || libChanged.isEmpty()) return; libChanged.toList().also { libChanged.clear() } }
+        val loaded = withContext(Dispatchers.IO) { keys.mapNotNull { k -> store.load(k) } }
+        synchronized(libLock) {
+            if (libFullRunning) { libChanged.addAll(keys); return }   // lượt đọc toàn bộ đang chạy sẽ có đủ
+            val set = keys.toHashSet()
+            _library.value = loaded.sortedByDescending { it.lastSavedMillis } + _library.value.filter { it.key !in set }
+        }
     }
 
     fun delete(key: String, v: Version?) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { if (v == null) store.deleteAll(key) else store.delete(key, v) }
-            refreshLibrary(); refreshStatuses()
+            libraryChanged(key); applyLibraryChanges(); refreshStatuses()
         }
     }
 
@@ -451,12 +498,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var batchInterrupted = false
 
     private var lastLibraryRefresh = 0L
-    /** Làm mới thư viện tối đa mỗi 5 giây khi đang tải (store.list() đọc lại mọi thư mục bài). */
+    /** Khi đang tải: tối đa mỗi 5 giây cập nhật thư viện TỪNG PHẦN (chỉ các bài vừa lưu), không đọc lại cả thư viện. */
     private fun refreshLibrarySoon() {
         val now = System.currentTimeMillis()
         if (now - lastLibraryRefresh < 5_000) return
         lastLibraryRefresh = now
-        refreshLibrary()
+        viewModelScope.launch { applyLibraryChanges() }
     }
 
     private suspend fun runBatch(only: Set<String>?) {
@@ -528,6 +575,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         title = out.title ?: it.title, key = out.key ?: it.key, updatedAt = System.currentTimeMillis())
                 } }
                 synchronized(meter) { meter.record(System.currentTimeMillis()) }
+                if (out.ok && out.cls == ResponseClass.OK) out.key?.let { libraryChanged(it) }
                 refreshLibrarySoon()
                 if (out.cls == ResponseClass.BLOCKED) stop.compareAndSet(null,
                     "Website đang chặn/yêu cầu xác minh (${out.message}). Đã dừng cả hàng đợi — app không thử vượt qua. " +
@@ -566,7 +614,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             gate.intervalMs = DownloadConfig.minIntervalMs
             batchInterrupted = !completed || stop.get() != null || _batch.value.pauseRequested
             withContext(NonCancellable + Dispatchers.IO) { flushQueue() }
-            refreshLibrary()
+            withContext(NonCancellable) { applyLibraryChanges() }
             val stopMessage = stop.get() ?: if (_batch.value.pauseRequested) "Đã tạm dừng. Bấm Tiếp tục để tải tiếp." else null
             retryScope?.let { s -> if (_batch.value.queue.pendingCount(s) == 0) retryScope = null }
             _batch.update {
