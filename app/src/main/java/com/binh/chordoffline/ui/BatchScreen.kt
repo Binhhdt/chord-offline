@@ -376,8 +376,9 @@ private fun ScanHistoryCard(vm: AppViewModel, book: ScanProgressBook, currentUrl
 @Composable
 private fun AutoCard(vm: AppViewModel, a: AutoUi, d: DiscoverUi, b: BatchUi, confirmed: Boolean) {
     SectionCard("Tự động quét & tải đến hết") {
-        Text("Lặp lại: quét ${d.maxPages} trang → tự thêm bài chưa lưu → tải xong → quét tiếp. Dừng khi tới trang cuối, " +
-            "khi bạn bấm Dừng, hoặc khi website giới hạn. Màn hình được giữ sáng trong lúc chạy; nên cắm sạc.",
+        Text("Lặp lại: quét ${d.maxPages} trang → tự thêm bài chưa lưu → tải, và trong lúc tải thì quét luôn ${d.maxPages} trang kế tiếp " +
+            "(hàng đợi giữ trước tối đa ~1 vòng; quét và tải dùng chung giới hạn ~${DownloadConfig.MAX_REQUESTS_PER_SECOND.toInt()} request/giây). " +
+            "Dừng khi tới trang cuối, khi bạn bấm Dừng, hoặc khi website giới hạn. Màn hình được giữ sáng trong lúc chạy; nên cắm sạc.",
             style = MaterialTheme.typography.bodySmall)
         if (a.active) {
             Text("Đang chạy · ${a.phase}", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)

@@ -39,15 +39,18 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
     private var cachedApp: DocumentFile? = null
     private var cachedTree: Uri? = null
     private var childDirs: MutableMap<String, DocumentFile>? = null
+    private var childFiles: MutableMap<String, DocumentFile>? = null
 
-    @Synchronized fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null }
+    @Synchronized fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null; childFiles = null }
 
     private fun cachedAppDir(): DocumentFile {
         val t = treeUri
         cachedApp?.takeIf { cachedTree == t }?.let { return it }
         val app = appDir(create = true) ?: error("Chưa chọn thư mục lưu hoặc mất quyền truy cập")
         cachedApp = app; cachedTree = t
-        childDirs = app.listFiles().filter { it.isDirectory && it.name != null }.associateBy { it.name!! }.toMutableMap()
+        val all = app.listFiles().filter { it.name != null }
+        childDirs = all.filter { it.isDirectory }.associateBy { it.name!! }.toMutableMap()
+        childFiles = all.filter { !it.isDirectory }.associateBy { it.name!! }.toMutableMap()
         return app
     }
 
@@ -69,9 +72,17 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         .any { d -> d.findFile("song.cho") != null || d.findFile("page.html") != null }
 
     /** Ghi/đọc file phụ (tiến độ quét) ở thư mục gốc của bản sao lưu. */
-    @Synchronized fun writeExtra(name: String, text: String) {
-        val app = appDir(create = true) ?: return
-        val f = app.findFile(name) ?: app.createFile("application/octet-stream", name) ?: return
+    @Synchronized fun writeExtra(name: String, text: String) = try {
+        writeExtraCached(name, text)
+    } catch (e: Exception) {
+        invalidateCache()          // thư mục/file bị đổi bên ngoài -> liệt kê lại rồi thử một lần nữa
+        writeExtraCached(name, text)
+    }
+
+    private fun writeExtraCached(name: String, text: String) {
+        val app = cachedAppDir()
+        val files = childFiles!!
+        val f = files[name] ?: (app.createFile("application/octet-stream", name) ?: return).also { files[name] = it }
         context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(text.toByteArray()) }
     }
 

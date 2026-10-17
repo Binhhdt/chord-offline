@@ -390,7 +390,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         setQueue { it.copy(saveCompact = compact, savePage = page) }
     }
 
-    fun batchStart() {
+    fun batchStart() = batchStart(fromAuto = false)
+
+    /** [fromAuto]: chế độ Tự động được phép tải trong lúc đang quét vòng sau (dùng chung cổng tốc độ). */
+    private fun batchStart(fromAuto: Boolean) {
         val b = _batch.value
         retryScope?.let { s -> if (b.queue.pendingCount(s) == 0) retryScope = null }
         when {
@@ -399,7 +402,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             !b.queue.saveCompact && !b.queue.savePage -> { _batch.update { it.copy(message = "Chọn ít nhất một kiểu lưu.") }; return }
             !b.queue.hasPending -> { _batch.update { it.copy(message = "Không còn mục nào đang chờ.") }; return }
             _check.value.loading -> { _batch.update { it.copy(message = "Đang tải ở tab Kiểm tra URL, thử lại sau.") }; return }
-            _discover.value.running -> { _batch.update { it.copy(message = "Đang quét danh mục — đợi quét xong hoặc bấm Dừng quét.") }; return }
+            _discover.value.running && !fromAuto -> { _batch.update { it.copy(message = "Đang quét danh mục — đợi quét xong hoặc bấm Dừng quét.") }; return }
         }
         val scope = retryScope
         _batch.update { it.copy(running = true, pauseRequested = false, message = null, retryOnly = scope?.size) }
@@ -434,6 +437,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!_batch.value.running) { retryScope = null; setQueue { it.clearAll() }; _batch.update { it.copy(lastAdd = null, message = null, retryOnly = null) } }
     }
 
+    // ---------- Cổng tốc độ DÙNG CHUNG cho tải bài và quét danh mục (tổng ≤ ~3 request/giây) ----------
+    private val sharedGate = RateGate(DownloadConfig.minIntervalMs)
+    private val gateLock = Mutex()
+
+    /** Xin một khe gửi request từ cổng chung (dùng cho trang danh mục khi đang tải song song). */
+    private suspend fun acquireShared() {
+        val wait = gateLock.withLock { sharedGate.reserve(System.currentTimeMillis()) }
+        if (wait > 0) delay(wait)
+    }
+
+    /** Lượt tải gần nhất bị ngắt (tạm dừng / website giới hạn / huỷ) chứ không phải hết bài. */
+    @Volatile private var batchInterrupted = false
+
     private var lastLibraryRefresh = 0L
     /** Làm mới thư viện tối đa mỗi 5 giây khi đang tải (store.list() đọc lại mọi thư mục bài). */
     private fun refreshLibrarySoon() {
@@ -446,8 +462,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runBatch(only: Set<String>?) {
         val n = _workers.value
         val adapt = AdaptiveConcurrency(n)
-        val gate = RateGate(DownloadConfig.minIntervalMs)
-        val gateLock = Mutex()
+        val gate = sharedGate
+        var completed = false
         val meter = ThroughputMeter().also { it.start(System.currentTimeMillis()) }
         val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val stop = AtomicReference<String?>(null)
@@ -545,7 +561,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 (0 until n).map { idx -> launch(Dispatchers.IO) { worker(idx) } }.joinAll()
                 ticker.cancel()
             }
+            completed = true
         } finally {
+            gate.intervalMs = DownloadConfig.minIntervalMs
+            batchInterrupted = !completed || stop.get() != null || _batch.value.pauseRequested
             withContext(NonCancellable + Dispatchers.IO) { flushQueue() }
             refreshLibrary()
             val stopMessage = stop.get() ?: if (_batch.value.pauseRequested) "Đã tạm dừng. Bấm Tiếp tục để tải tiếp." else null
@@ -653,10 +672,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _progress = MutableStateFlow(runCatching { ScanProgressBook.parse(progressFile.readText()) }.getOrDefault(ScanProgressBook()))
     val progress: StateFlow<ScanProgressBook> = _progress
 
-    private fun saveProgress(b: ScanProgressBook) {
+    /**
+     * Lưu tiến độ quét. Bản trong máy ghi ngay; bản sao trong thư mục sao lưu ([mirror] = true) ghi qua SAF —
+     * khi đang quét chỉ ghi một lần lúc kết thúc đợt quét (SAF chậm khi thư mục có hàng nghìn bài).
+     */
+    private fun saveProgress(b: ScanProgressBook, mirror: Boolean = true) {
         _progress.value = b
         runCatching { progressFile.writeText(b.serialize()) }
-        if (backup.autoBackup) runCatching { if (backup.hasValidFolder()) backup.writeExtra(ScanProgressBook.FILE_NAME, b.serialize()) }
+        if (mirror) mirrorProgress()
+    }
+
+    private fun mirrorProgress() {
+        if (backup.autoBackup) runCatching { if (backup.hasValidFolder()) backup.writeExtra(ScanProgressBook.FILE_NAME, _progress.value.serialize()) }
     }
 
     /** Đổi URL: nếu danh sách này đã quét trước đó (kể cả trước khi tắt/cài lại app) thì nạp lại điểm "Quét tiếp". */
@@ -736,7 +763,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // =====================================================================
-    // TỰ ĐỘNG QUÉT & TẢI ĐẾN HẾT — vẫn tuần tự, vẫn nghỉ giữa các request, vẫn dừng khi website giới hạn.
+    // TỰ ĐỘNG QUÉT & TẢI ĐẾN HẾT — quét vòng sau song song với tải, dùng chung cổng tốc độ, vẫn dừng khi website giới hạn.
     // =====================================================================
     private val _auto = MutableStateFlow(AutoUi())
     val auto: StateFlow<AutoUi> = _auto
@@ -753,6 +780,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ListingPolicy.validate(d.url)?.let { why -> _auto.update { it.copy(message = why, isError = true) }; return }
         val start = d.resumeUrl ?: if (d.reachedEnd) null else BatchQueue.normalizeUrl(d.url.trim())
         if (start == null) { _auto.update { it.copy(message = "Danh mục này đã quét tới trang cuối rồi.", isError = false) }; return }
+        retryScope = null      // tự động: tải mọi bài chờ, không ở chế độ "Thử lại lỗi"
         _auto.value = AutoUi(active = true, phase = "Bắt đầu…")
         autoJob = viewModelScope.launch { runAuto(start) }
     }
@@ -766,47 +794,85 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _auto.update { it.copy(active = false, phase = "", message = "Đã dừng tự động. Bấm lại để chạy tiếp từ chỗ đã dừng.", isError = false) }
     }
 
+    /**
+     * Tự động (v0.9): quét vòng sau NGAY TRONG LÚC đang tải vòng trước.
+     *  - Quét và tải dùng chung cổng tốc độ (tổng ≤ ~3 request/giây) → không tăng tải lên website.
+     *  - Hàng đợi chỉ giữ trước tối đa ~1 vòng (maxPages × 30 bài) — nhiều hơn thì đợi tải bớt rồi mới quét tiếp.
+     *  - Hàng đợi bị ngắt (website giới hạn/chặn, tạm dừng) → dừng cả quét lẫn tự động, như trước.
+     */
     private suspend fun runAuto(startUrl: String) {
         var from: String? = startUrl
         var msg: String? = null
         var err = false
+        val ahead = maxOf(30, _discover.value.maxPages * 30)
+
+        /** Lý do nếu hàng đợi đã bị ngắt (không phải tải hết bài). */
+        fun stoppedReason(): String? {
+            val b = _batch.value
+            return if (!b.running && b.queue.hasPending && batchInterrupted) (b.message ?: "hàng đợi đã dừng giữa chừng") else null
+        }
+        /** Còn bài chờ mà hàng đợi chưa chạy → chạy (song song với quét). false nếu không khởi động được. */
+        fun ensureRunning(): Boolean {
+            val b = _batch.value
+            if (b.running || !b.queue.hasPending) return true
+            batchStart(fromAuto = true)
+            return _batch.value.running
+        }
+        fun progressText(): String { val q = _batch.value.queue; return "đang tải ${q.finished}/${q.total}" }
+
         try {
-            while (from != null) {
+            while (true) {
+                stoppedReason()?.let { why -> msg = "Dừng tự động: $why"; err = why.startsWith("Website") }
+                if (msg != null) break
+                val f = from
+                if (f == null) {
+                    // Đã quét tới trang cuối: chờ tải nốt hàng đợi
+                    while (true) {
+                        if (!_batch.value.running) {
+                            if (!_batch.value.queue.hasPending || stoppedReason() != null || !ensureRunning()) break
+                        }
+                        _auto.update { it.copy(phase = "Đã quét hết · ${progressText()}") }
+                        delay(1000)
+                    }
+                    val why = stoppedReason() ?: if (_batch.value.queue.hasPending) (_batch.value.message ?: "hàng đợi chưa tải xong") else null
+                    val after = _discover.value
+                    msg = if (why != null) "Dừng tự động: $why"
+                        else "✅ Đã tới trang cuối (trang ${after.lastScanned}${after.totalPages?.let { "/$it" } ?: ""}) — hoàn tất."
+                    err = why?.startsWith("Website") == true
+                    break
+                }
+
+                // Giữ trước tối đa ~1 vòng trong hàng đợi
+                while (_batch.value.running && _batch.value.queue.pendingCount(null) > ahead) {
+                    _auto.update { it.copy(phase = "Vòng ${it.round}: ${progressText()} · đợi tải bớt rồi quét vòng sau") }
+                    delay(1000)
+                }
+                if (stoppedReason() != null) continue      // vòng lặp đầu sẽ ghi lý do và dừng
+
                 val round = _auto.value.round + 1
-                val startPage = ListingPolicy.pageIndex(from) + 1
-                _auto.update { it.copy(round = round, phase = "Vòng $round: quét từ trang $startPage") }
+                val startPage = ListingPolicy.pageIndex(f) + 1
+                _auto.update { it.copy(round = round,
+                    phase = "Vòng $round: quét từ trang $startPage" + if (_batch.value.running) " (song song: ${progressText()})" else "") }
                 // 1) quét một đợt trang (danh sách xem trước làm mới mỗi vòng cho nhẹ)
                 _discover.update { it.copy(running = true, items = emptyList(), message = null, isError = false, resumeUrl = null,
-                    log = (it.log + "— Tự động vòng $round: quét ${it.maxPages} trang từ trang $startPage —").takeLast(60)) }
-                runDiscover(from, _discover.value.maxPages)
+                    log = (it.log + "— Tự động vòng $round: quét ${it.maxPages} trang từ trang $startPage —").takeLast(LOG_LINES)) }
+                runDiscover(f, _discover.value.maxPages, abort = { stoppedReason() })
+                if (stoppedReason() != null) continue
                 val d = _discover.value
                 if (d.isError) { msg = "Dừng tự động: " + (d.message ?: "lỗi khi quét"); err = true; break }
 
-                // 2) thêm bài chưa lưu & chưa trong hàng đợi, rồi tải hết
+                // 2) thêm bài chưa lưu & chưa trong hàng đợi, rồi tải (song song với vòng quét sau)
                 val urls = d.items.filter { it.selected }.map { it.song.url }
                 if (urls.isNotEmpty()) {
                     val r = batchAdd(urls.joinToString("\n"))
-                    _auto.update { it.copy(totalQueued = it.totalQueued + r.added, phase = "Vòng $round: tải ${r.added} bài mới") }
+                    _auto.update { it.copy(totalQueued = it.totalQueued + r.added, phase = "Vòng $round: thêm ${r.added} bài · ${progressText()}") }
                 }
-                if (_batch.value.queue.hasPending) {
-                    batchStart()
-                    delay(300)
-                    while (_batch.value.running) {
-                        val q = _batch.value.queue
-                        _auto.update { it.copy(phase = "Vòng $round: đang tải ${q.finished}/${q.total}") }
-                        delay(1000)
-                    }
-                    if (_batch.value.queue.hasPending) {          // bị tạm dừng / website giới hạn
-                        msg = "Dừng tự động: " + (_batch.value.message ?: "hàng đợi đã dừng giữa chừng")
-                        err = _batch.value.message?.startsWith("Website") == true
-                        break
-                    }
+                if (!ensureRunning()) {
+                    msg = "Dừng tự động: " + (_batch.value.message ?: "không bắt đầu tải được"); err = true; break
                 }
                 // 3) quét tiếp hay đã hết
-                val after = _discover.value
-                if (after.reachedEnd) { msg = "✅ Đã tới trang cuối (trang ${after.lastScanned}${after.totalPages?.let { "/$it" } ?: ""}) — hoàn tất."; break }
-                from = after.resumeUrl
-                if (from == null) { msg = "Dừng tự động: " + (after.message ?: "không còn trang để quét tiếp."); break }
+                from = if (d.reachedEnd) null else d.resumeUrl
+                if (from == null && !d.reachedEnd) { msg = "Dừng tự động: " + (d.message ?: "không còn trang để quét tiếp."); break }
             }
         } catch (e: CancellationException) {
             throw e
@@ -824,16 +890,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             message = "Đã dừng quét. Danh sách tìm được đến lúc dừng vẫn được giữ.", isError = false) }
     }
 
+    /** Lúc gửi request trang danh mục gần nhất (nhịp nghỉ giữa các trang khi quét song song với tải). */
+    @Volatile private var lastScanAt = 0L
+
     private suspend fun waitForSlot(onWait: (Int) -> Unit) {
         while (true) {
-            val wait = pace() - (System.currentTimeMillis() - lastRequestAt)
+            // Đang tải song song: nghỉ tính từ trang quét trước (việc tải bài đã có cổng tốc độ chung giới hạn tổng).
+            val ref = if (_batch.value.running) lastScanAt else maxOf(lastRequestAt, lastScanAt)
+            val wait = pace() - (System.currentTimeMillis() - ref)
             if (wait <= 0) return
             onWait(((wait + 999) / 1000).toInt())
             delay(minOf(wait, 250L))
         }
     }
 
-    private suspend fun runDiscover(startUrl: String, maxPages: Int) {
+    /** [abort]: trả về lý do khi cần dừng quét giữa chừng (chế độ Tự động: hàng đợi tải đã bị dừng). */
+    private suspend fun runDiscover(startUrl: String, maxPages: Int, abort: (() -> String?)? = null) {
         val d = Discovery(maxPages)
         var url: String? = startUrl
         var finalMsg: String? = null
@@ -845,14 +917,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 val cur = url ?: break
                 discoverNext = cur
+                abort?.invoke()?.let { why -> finalMsg = "Dừng quét: $why"; isError = true }
+                if (isError) break
                 waitForSlot { s -> _discover.update { it.copy(waitSeconds = s, currentPage = null) } }
+                acquireShared()
                 val path = UrlPolicy.path(cur)
                 if (robots?.isAllowed(path) == false) { finalMsg = "robots.txt không cho phép $path — dừng."; isError = true; break }
                 _discover.update { it.copy(waitSeconds = 0, currentPage = cur) }
                 lastRequestAt = System.currentTimeMillis()
+                lastScanAt = lastRequestAt
                 val f = withContext(Dispatchers.IO) { fetcher.fetch(cur) }
                 lastResponseMs = f.elapsedMs
                 lastRequestAt = System.currentTimeMillis()
+                lastScanAt = lastRequestAt
                 val pageNo = ListingPolicy.pageIndex(cur) + 1
                 if (BatchQueue.isBlockingResponse(f.status, f.body)) {
                     finalMsg = "Website đang giới hạn/chặn (HTTP ${f.status ?: "?"}) ở trang $pageNo. Đã dừng quét — app không thử vượt qua."
@@ -871,14 +948,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     (if (savedHere > 0) ", $savedHere đã lưu" else "") + ") · HTTP ${f.status} · ${f.elapsedMs} ms" +
                     (if (page.method == "fallback") " · ⚠ không thấy cột chính, đã loại cột bên/menu" else "") +
                     (if (page.excluded > 0) " · bỏ ${page.excluded} link ngoài danh sách chính" else "")
-                val found = d.found
-                val items = withContext(Dispatchers.IO) { found.map { toFoundItem(it) } }
+                // Chỉ xét các bài MỚI (chưa có trong danh sách xem trước); tra hàng đợi bằng bảng băm dựng một lần.
+                val known = _discover.value.items.mapTo(HashSet()) { BatchQueue.dedupeKey(it.song.url) }
+                val fresh = d.found.filter { BatchQueue.dedupeKey(it.url) !in known }
+                val items = withContext(Dispatchers.IO) {
+                    val queued = _batch.value.queue.items.asSequence().filter { it.state != ItemState.CANCELLED }
+                        .mapTo(HashSet()) { BatchQueue.dedupeKey(it.url) }
+                    fresh.map { toFoundItem(it, queued) }
+                }
                 discoverNext = page.nextUrl
                 val stopEnd = page.nextUrl == null
                 withContext(Dispatchers.IO) {
-                    saveProgress(_progress.value.record(cur, pageNo, total, page.nextUrl, stopEnd, System.currentTimeMillis()))
+                    saveProgress(_progress.value.record(cur, pageNo, total, page.nextUrl, stopEnd, System.currentTimeMillis()), mirror = false)
                 }
-                _discover.update { it.copy(log = it.log + logLine, items = mergeSelection(it.items, items),
+                _discover.update { it.copy(log = (it.log + logLine).takeLast(LOG_LINES), items = mergeSelection(it.items, items),
                     lastScanned = pageNo, totalPages = total ?: it.totalPages) }
                 if (d.pages == 1 && page.songs.isEmpty()) {
                     finalMsg = "Không tìm thấy link bài hát nào trên trang này. Có thể đây không phải trang danh sách bài hát, " +
@@ -898,6 +981,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Throwable) {
             finalMsg = "Lỗi khi quét: ${e.javaClass.simpleName}: ${e.message}"; isError = true
         } finally {
+            // Sao tiến độ quét sang thư mục sao lưu một lần cho cả đợt (thay vì sau mỗi trang)
+            withContext(NonCancellable + Dispatchers.IO) { mirrorProgress() }
             _discover.update {
                 if (!it.running) it   // đã dừng bằng nút Dừng quét
                 else it.copy(running = false, waitSeconds = 0, currentPage = null, isError = isError,
@@ -908,10 +993,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun toFoundItem(s: FoundSong): FoundItem {
+    private fun toFoundItem(s: FoundSong, queuedKeys: Set<String>): FoundItem {
         val saved = store.isSaved(store.keyForUrl(s.url), compact = _batch.value.queue.saveCompact, page = _batch.value.queue.savePage)
-        val key = BatchQueue.dedupeKey(s.url)
-        val queued = _batch.value.queue.items.any { BatchQueue.dedupeKey(it.url) == key && it.state != ItemState.CANCELLED }
+        val queued = BatchQueue.dedupeKey(s.url) in queuedKeys
         return FoundItem(s, selected = !saved && !queued, alreadySaved = saved, inQueue = queued)
     }
 
@@ -1046,6 +1130,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val BATCH_DELAY_MS = 3_000L
+        /** Nhật ký quét giữ tối đa bấy nhiêu dòng gần nhất (danh sách dài làm màn hình vẽ lại chậm). */
+        const val LOG_LINES = 60
         private val ZONE: ZoneId = ZoneId.systemDefault()
         fun fmt(ms: Long): String = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss").withZone(ZONE).format(Instant.ofEpochMilli(ms))
         fun iso(ms: Long): String = DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZONE).format(Instant.ofEpochMilli(ms))

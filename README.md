@@ -129,6 +129,25 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.9.0: quét danh mục nhanh hơn (A + C)
+
+**Vì sao quét chậm:** website trả mỗi trang danh mục trong khoảng 0,3–0,6 giây, nhưng app tốn thêm thời gian ở mấy chỗ sau:
+- Sau mỗi trang, app so **từng bài tìm được (tới 600) với cả hàng đợi (hàng nghìn bài)**, chuẩn hoá lại URL mỗi lần so, nên mỗi trang mất hàng triệu phép so.
+- App ghi tiến độ quét vào thư mục sao lưu (SAF) sau mỗi trang. Mỗi lần ghi phải liệt kê lại thư mục có hàng nghìn bài.
+- Nhật ký quét dài mãi nên màn hình vẽ lại ngày càng nặng.
+- Chế độ Tự động phải đợi tải xong một vòng rồi mới quét vòng sau.
+
+**A: bỏ việc phụ** (không tăng tải cho website):
+- Chỉ xét các bài **mới** của trang vừa quét. Bài trong hàng đợi được tra bằng bảng băm dựng một lần cho mỗi trang.
+- Tiến độ quét trong máy vẫn ghi sau mỗi trang. Bản trong thư mục sao lưu chỉ ghi **một lần khi kết thúc đợt quét**, và app nhớ sẵn vị trí file để không phải liệt kê lại thư mục.
+- Nhật ký chỉ giữ **60 dòng** gần nhất.
+
+**C: Tự động quét vòng sau ngay trong lúc tải vòng trước**:
+- Quét và tải dùng **chung một cổng tốc độ** (tổng ≤ ~3 request/giây), nên tổng tải lên website không tăng. Giữa các trang quét vẫn nghỉ theo lựa chọn "Nghỉ giữa các trang khi quét danh mục".
+- Hàng đợi chỉ giữ trước tối đa **~1 vòng** (số trang × 30 bài). Nhiều hơn thì app đợi tải bớt rồi mới quét tiếp.
+- Hàng đợi bị ngắt (website giới hạn/chặn, bạn tạm dừng) thì quét cũng dừng ngay ở trang kế tiếp, rồi chế độ tự động dừng và ghi rõ lý do, như trước.
+- Quét bằng tay (nút "Quét danh sách" / "Quét tiếp") vẫn như cũ: không chạy khi hàng đợi đang tải.
+
 ## v0.8.0: tải song song có kiểm soát (phương án A + B)
 
 **Vì sao bản cũ chậm** (đo trên mã nguồn v0.7.0):
