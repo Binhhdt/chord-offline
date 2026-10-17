@@ -23,6 +23,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.binh.chordoffline.core.BatchItem
+import com.binh.chordoffline.core.DownloadConfig
+import com.binh.chordoffline.core.ThroughputMeter
 import com.binh.chordoffline.core.ItemState
 import com.binh.chordoffline.core.ListingPolicy
 import com.binh.chordoffline.core.PacePolicy
@@ -31,7 +33,7 @@ import com.binh.chordoffline.core.Version
 
 /**
  * Màn "Tải nhiều": lấy danh sách từ trang danh mục (xem trước, chọn, xác nhận) hoặc dán link / nhập TXT.
- * Tải tuần tự, nghỉ 3 giây giữa các request; bài đã lưu thành công không tải lại.
+ * Tải song song có kiểm soát (mặc định 3 luồng, tổng tối đa ~3 request/giây); bài đã lưu thành công không tải lại.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -57,8 +59,9 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         if (q.total > 0) stickyHeader(key = "mini-progress") { MiniProgress(vm, b, check.confirmed) }
         item {
             Text("Tải nhiều bài", style = MaterialTheme.typography.titleLarge)
-            Text("Tải tuần tự, nghỉ ${PacePolicy.label(vm.delayMs.collectAsState().value)} giữa các request. Gặp giới hạn/chặn (403, 429, 503, trang xác minh) " +
-                "thì tự dừng — app không vượt CAPTCHA, đăng nhập hay biện pháp bảo vệ của website.",
+            Text("Tải song song ${vm.workers.collectAsState().value} luồng, tổng tối đa ~${DownloadConfig.MAX_REQUESTS_PER_SECOND.toInt()} request/giây. " +
+                "Website báo bận (429/502/503/504) thì tự giảm luồng và thử lại chậm dần; gặp chặn (403, trang xác minh) thì dừng hẳn — " +
+                "app không vượt CAPTCHA, đăng nhập hay biện pháp bảo vệ của website.",
                 style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = check.confirmed, onCheckedChange = vm::setConfirmed, enabled = !b.running)
@@ -112,7 +115,7 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                 Text(if (showQueue) "▲ Ẩn danh sách hàng đợi" else "▼ Xem danh sách hàng đợi (${q.total} bài)")
             }
         }
-        if (showQueue) items(q.items, key = { it.url }) { item -> BatchRow(item, b.running && b.currentUrl == item.url, onOpen) }
+        if (showQueue) items(q.items, key = { it.url }) { item -> BatchRow(item, b.running && item.url in b.currentUrls, onOpen) }
     }
 }
 
@@ -129,15 +132,34 @@ private fun SaveOptionsCard(vm: AppViewModel, b: BatchUi) {
             Text("Nguyên trang HTML (~300 KB/bài)")
         }
         Text("Bài đã có đủ các bản đã chọn sẽ được bỏ qua, không tải lại.", style = MaterialTheme.typography.labelSmall)
+        val workers by vm.workers.collectAsState()
+        Text("Số luồng tải cùng lúc", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            DownloadConfig.WORKER_OPTIONS.forEach { o ->
+                FilterChip(selected = workers == o, onClick = { vm.setWorkers(o) }, enabled = !b.running,
+                    label = { Text(if (o == DownloadConfig.MAX_WORKERS) "$o (mặc định)" else "$o") })
+            }
+        }
+        val extra by vm.extraDelay.collectAsState()
+        Text("Nghỉ thêm sau mỗi bài (mỗi luồng)", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            DownloadConfig.DELAY_OPTIONS.forEach { o ->
+                FilterChip(selected = extra == o, onClick = { vm.setExtraDelay(o) }, enabled = !b.running,
+                    label = { Text(if (o == 0L) "0" else PacePolicy.label(o)) })
+            }
+        }
+        Text("Dù chọn bao nhiêu luồng, tổng số request luôn ≤ ~${DownloadConfig.MAX_REQUESTS_PER_SECOND.toInt()}/giây. " +
+            "Website bận thì app tự giảm luồng, chờ 1 → 2 → 4 giây (theo Retry-After nếu có) rồi thử lại tối đa ${DownloadConfig.MAX_RETRIES} lần.",
+            style = MaterialTheme.typography.labelSmall)
         val ms by vm.delayMs.collectAsState()
-        Text("Nghỉ giữa các bài", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+        Text("Nghỉ giữa các trang khi quét danh mục", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             PacePolicy.OPTIONS.forEach { o ->
                 FilterChip(selected = ms == o, onClick = { vm.setDelay(o) }, label = { Text(PacePolicy.label(o)) })
             }
         }
-        Text("Ngắn hơn thì nhanh hơn nhưng dồn tải lên website hơn. Website trả lời chậm thì app tự nghỉ lâu hơn; " +
-            "gặp giới hạn (429/503) thì tự dừng.", style = MaterialTheme.typography.labelSmall)
+        Text("Quét danh mục vẫn đi tuần tự từng trang. Website trả lời chậm thì app tự nghỉ lâu hơn.",
+            style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -147,14 +169,14 @@ private fun MiniProgress(vm: AppViewModel, b: BatchUi, confirmed: Boolean) {
     val q = b.queue
     val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
     val left = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING)
-    val etaMin = PacePolicy.etaMinutes(left, vm.delayMs.collectAsState().value)
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text((if (b.running) "⬇ Đang tải " else "⏸ Hàng đợi ") + "${q.finished}/${q.total}",
                         fontWeight = FontWeight.Bold)
-                    Text("✅ $done  ❌ $err  ⏳ $left" + if (left > 0) " · còn ~$etaMin phút" else "",
+                    Text("✅ $done  ❌ $err  ⏳ $left" +
+                        if (b.running) " · ${ThroughputMeter.formatRate(b.rate)} · còn ${ThroughputMeter.formatEta(b.etaSec)}" else "",
                         style = MaterialTheme.typography.bodySmall)
                 }
                 when {
@@ -253,14 +275,26 @@ private fun ProgressCard(vm: AppViewModel, b: BatchUi, confirmed: Boolean) {
     SectionCard("Tiến độ hàng đợi") {
         val done = q.count(ItemState.DONE); val err = q.count(ItemState.ERROR)
         val pending = q.count(ItemState.PENDING) + q.count(ItemState.RUNNING); val cancelled = q.count(ItemState.CANCELLED)
-        Text("Tổng ${q.total} · Thành công $done · Thất bại $err · Chờ $pending · Huỷ $cancelled", fontWeight = FontWeight.SemiBold)
+        if (b.running) Text("Đang tải ${q.finished}/${q.total}", fontWeight = FontWeight.Bold)
+        Text("Thành công $done · Thất bại $err · Đang chờ $pending · Huỷ $cancelled", fontWeight = FontWeight.SemiBold)
         if (q.total > 0) LinearProgressIndicator(progress = { q.finished.toFloat() / q.total }, modifier = Modifier.fillMaxWidth())
-        when {
-            b.running && b.currentUrl != null -> Text("Đang tải: ${b.currentUrl}", style = MaterialTheme.typography.bodySmall,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            b.running && b.waitSeconds > 0 -> Text("Nghỉ giữa các request… còn ${b.waitSeconds} giây", style = MaterialTheme.typography.bodySmall)
+        if (b.running) {
+            Text("Tốc độ: ${ThroughputMeter.formatRate(b.rate)} · ETA: ${ThroughputMeter.formatEta(b.etaSec)}",
+                style = MaterialTheme.typography.bodyMedium)
+            val workers by vm.workers.collectAsState()
+            Text("Luồng: ${b.workerLimit}/$workers" +
+                (if (b.workerLimit in 1 until workers) " (đã tự giảm vì website báo bận)" else "") +
+                (if (b.throttles > 0) " · website báo bận ${b.throttles} lần" else ""),
+                style = MaterialTheme.typography.bodySmall)
+            b.currentUrls.take(DownloadConfig.HARD_MAX_WORKERS).forEach { u ->
+                Text("⬇ $u", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
-        if (b.pauseRequested) Text("Sẽ tạm dừng sau bài đang tải…", style = MaterialTheme.typography.bodySmall)
+        b.retryOnly?.let { Text("Chế độ thử lại: chỉ tải lại $it bài lỗi, không đụng các bài đang chờ khác.",
+            style = MaterialTheme.typography.bodySmall) }
+        if (b.postPending > 0) Text("Đang lưu ảnh YouTube & sao lưu nền: còn ${b.postPending} bài",
+            style = MaterialTheme.typography.labelSmall)
+        if (b.pauseRequested) Text("Sẽ tạm dừng sau các bài đang tải…", style = MaterialTheme.typography.bodySmall)
         b.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
             color = if (it.startsWith("Website")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
 

@@ -47,7 +47,7 @@ Theo `robots.txt` và [Điều khoản](https://hopamviet.vn/info/policy), đọ
   - nếu bạn định phát hành app hoặc chia sẻ bản lưu, hãy **xin phép Hợp Âm Việt bằng văn bản** trước.
 - Hành vi mạng của app:
   - tab Kiểm tra URL: mỗi lần bấm chỉ gửi **một request**, cách lần trước ít nhất 5 giây;
-  - tab Tải nhiều: tải **tuần tự**, nghỉ **3 giây** giữa các request (tính cả request robots.txt). Gặp HTTP 403/429/503 hoặc trang xác minh thì **tự tạm dừng cả hàng đợi** và không tự thử lại;
+  - tab Tải nhiều (từ v0.8.0): tải **song song có kiểm soát**, mặc định 3 luồng, **tổng tối đa ~3 request/giây** cho cả app (tính cả request robots.txt). Gặp 429/502/503/504 thì tự giảm luồng và thử lại có backoff (tối đa 3 lần, tôn trọng Retry-After). Gặp 403 hoặc trang xác minh thì **dừng cả hàng đợi** và không thử vượt qua;
   - User-Agent ghi đúng tên app, không giả làm trình duyệt;
   - không cookie, không cache, không đăng nhập;
   - không vượt captcha hay chặn bot, không chạy JavaScript ẩn để lấy nội dung.
@@ -128,6 +128,46 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
    - **Bỏ mục xong** và **Xoá hết**.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
+
+## v0.8.0: tải song song có kiểm soát (phương án A + B)
+
+**Vì sao bản cũ chậm** (đo trên mã nguồn v0.7.0):
+- `runBatch()` tải **từng bài một**: chờ `pace()` (1–3 giây, tự tăng tới 10 giây khi server chậm) trước mỗi request, rồi mới tải bài kế.
+- Sau **mỗi** bài còn làm thêm các việc nằm ngay trên đường tải:
+  - `refreshLibrary()` đọc lại toàn bộ thư mục bài;
+  - `setQueue()` ghi lại cả file hàng đợi ~2000 dòng (2 lần mỗi bài);
+  - tự sao lưu SAF dùng `findFile()`, mà hàm này liệt kê lại cả thư mục gần 2000 bài mỗi lần gọi;
+  - tải ảnh YouTube tuần tự.
+- Kết nối mạng **không** phải nguyên nhân: app dùng một `OkHttpClient` chung, nên kết nối HTTP/2 keep-alive được dùng lại và không mở kết nối mới cho mỗi bài. App không dùng cookie hay đăng nhập (`CookieJar.NO_COOKIES`), nên không có session nào phải giữ khi tải song song. App viết bằng Kotlin, dùng coroutines + OkHttp; các thư viện Python như asyncio/aiohttp/httpx không áp dụng.
+
+**A: bỏ việc phụ khỏi đường tải** (không tăng tải cho website):
+- File hàng đợi được ghi gộp mỗi 3 giây và khi dừng/tạm dừng/thoát, thay vì ghi sau mỗi bài.
+- Thư viện "Đã lưu" làm mới tối đa mỗi 5 giây và một lần khi xong.
+- Ảnh YouTube và tự sao lưu chạy ở **hàng nền riêng**, không bắt worker phải chờ. Thông báo hiện "Đang hoàn tất…" tới khi hàng nền chạy xong.
+- Sao lưu SAF liệt kê thư mục một lần rồi giữ lại để tra nhanh, thay vì gọi `findFile` mỗi lần. Nếu thư mục bị đổi từ bên ngoài, app làm mới bộ nhớ đệm và thử lại.
+- Bài coi là "đã có" khi file đã lưu tồn tại **và không rỗng**. File 0 byte (do tắt app giữa chừng) sẽ được tải lại.
+
+**B: song song có kiểm soát** (`core/ConcurrentDownload.kt`):
+
+| Cấu hình | Giá trị | Chọn trong app |
+|---|---|---|
+| `MAX_WORKERS` | mặc định **3**, chọn 1/2/3 | Tải nhiều → Kiểu lưu → "Số luồng tải cùng lúc" |
+| `MAX_REQUESTS_PER_SECOND` | **3**, trần chung cho mọi luồng (cổng `RateGate`) | cố định |
+| `DELAY` | nghỉ thêm sau mỗi bài của một luồng, mặc định **0**, chọn 0/0,5/1/2 giây | "Nghỉ thêm sau mỗi bài" |
+| `MAX_RETRIES` | **3** | cố định |
+
+- Mỗi bài chỉ một luồng nhận: lệnh `claimNext()` chạy trong vùng khoá, đã có test với 3 luồng × 300 bài, không bài nào bị tải 2 lần.
+- Khi website báo bận (429/502/503/504 hoặc lỗi mạng):
+  - app giảm một nửa số luồng (tối thiểu 1) và giãn khoảng cách giữa các request;
+  - chờ 1 → 2 → 4 giây cộng jitter, hoặc theo **Retry-After** nếu server gửi. Trong lúc chờ Retry-After, cả nhóm luồng đều dừng gửi;
+  - khi ổn định lại (20 lần thành công liên tiếp và đã qua 30 giây), app tăng dần số luồng;
+  - nếu 3 bài liên tiếp vẫn lỗi sau khi thử lại, app tạm dừng cả hàng đợi.
+- Gặp 403 hoặc trang xác minh (CAPTCHA, "Just a moment"…), app **dừng hẳn** và không vượt qua.
+- Tiến độ: "Đang tải X/Y · Thành công · Thất bại · Đang chờ · Tốc độ: x,x bài/giây · ETA: m phút ss giây". Tốc độ và ETA đo trên **60 giây gần nhất** (`ThroughputMeter`). Thẻ tiến độ cũng hiện số luồng đang chạy và danh sách bài đang tải. Thông báo trên thanh trạng thái hiện cùng thông tin này.
+- **"Thử lại lỗi"** chỉ tải lại đúng các bài lỗi hoặc đã huỷ, không đụng tới các bài đang chờ khác. Nếu tạm dừng giữa lượt thử lại, bấm Tiếp tục sẽ vẫn chỉ tải các bài lỗi đó.
+- Quét trang danh mục vẫn tuần tự, nghỉ theo lựa chọn "Nghỉ giữa các trang khi quét danh mục".
+
+Ước tính cho ~770 bài: bản cũ tải 1 bài mỗi 2–3 giây, mất khoảng 30–40 phút. Bản mới bị giới hạn ở tối đa ~3 bài/giây và thực tế phụ thuộc thời gian server trả lời; tốc độ thật hiện ngay trong app. **Chưa đo trên điện thoại thật.**
 
 ## v0.7.0: quay lại giữ trang tìm kiếm, chọn khoảng nghỉ, tải chạy nền
 

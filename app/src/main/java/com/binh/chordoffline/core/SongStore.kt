@@ -65,9 +65,10 @@ class SongStore(private val root: File) {
 
     /** Bài đã có đủ các bản được yêu cầu chưa (để không tải lại bài đã lưu thành công). */
     fun isSaved(key: String, compact: Boolean, page: Boolean): Boolean =
-        (compact || page) &&
-            (!compact || status(key, Version.COMPACT).state == SaveState.SAVED) &&
-            (!page || status(key, Version.PAGE).state == SaveState.SAVED)
+        (compact || page) && (!compact || validFile(key, Version.COMPACT)) && (!page || validFile(key, Version.PAGE))
+
+    /** File đã lưu hợp lệ: tồn tại và không rỗng (file 0 byte do tắt app giữa chừng sẽ được tải lại). */
+    private fun validFile(key: String, v: Version): Boolean = File(dir(key), v.dataFile).let { it.isFile && it.length() > 0 }
 
     fun hasAny(key: String): Boolean =
         status(key, Version.COMPACT).state == SaveState.SAVED || status(key, Version.PAGE).state == SaveState.SAVED

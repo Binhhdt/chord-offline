@@ -51,6 +51,27 @@ data class BatchQueue(
 
     fun next(): BatchItem? = items.firstOrNull { it.state == ItemState.PENDING }
 
+    /** Mục chờ tiếp theo; nếu [only] khác null thì chỉ xét các URL trong tập đó (chế độ "Thử lại lỗi"). */
+    fun next(only: Set<String>?): BatchItem? =
+        items.firstOrNull { it.state == ItemState.PENDING && (only == null || it.url in only) }
+
+    fun pendingCount(only: Set<String>?): Int =
+        items.count { it.state == ItemState.PENDING && (only == null || it.url in only) }
+
+    /**
+     * Nhận (claim) mục chờ tiếp theo cho một worker: chuyển sang "Đang tải" và tăng số lần thử.
+     * Gọi trong vùng khoá để hai worker không bao giờ nhận cùng một bài.
+     */
+    fun claimNext(only: Set<String>?): Pair<BatchQueue, BatchItem?> {
+        val target = next(only) ?: return this to null
+        val claimed = target.copy(state = ItemState.RUNNING, attempts = target.attempts + 1, message = null)
+        return copy(items = items.map { if (it.url == target.url) claimed else it }) to claimed
+    }
+
+    /** Các URL đang lỗi/đã huỷ — dùng cho "Thử lại lỗi" để chỉ tải lại đúng những bài này. */
+    fun failedUrls(): Set<String> =
+        items.filter { it.state == ItemState.ERROR || it.state == ItemState.CANCELLED }.map { it.url }.toSet()
+
     fun update(url: String, f: (BatchItem) -> BatchItem) = copy(items = items.map { if (it.url == url) f(it) else it })
 
     /** Thử lại các mục lỗi và đã huỷ. */

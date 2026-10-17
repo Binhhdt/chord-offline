@@ -26,6 +26,8 @@ data class FetchResult(
     val fetchedAtMillis: Long,
     val body: String?,
     val error: String?,
+    /** Header Retry-After (giây) khi server báo giới hạn — để chờ đúng thời gian server yêu cầu. */
+    val retryAfterSec: Long? = null,
 ) {
     val ok: Boolean get() = error == null && status != null && status in 200..299
 }
@@ -79,6 +81,7 @@ class HttpFetcher(
                     fetchedAtMillis = at,
                     body = String(bytes, charset),
                     error = null,
+                    retryAfterSec = com.binh.chordoffline.core.RetryAfter.parseSeconds(resp.header("Retry-After"), at),
                 )
             }
         } catch (e: IOException) {

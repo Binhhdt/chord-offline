@@ -38,7 +38,7 @@ object CrashLog {
     fun stackTrace(e: Throwable): String = StringWriter().also { e.printStackTrace(PrintWriter(it)) }.toString()
 }
 
-object BuildConfigInfo { const val VERSION = "0.7.0" }
+object BuildConfigInfo { const val VERSION = "0.8.0" }
 
 class ChordApp : Application() {
     override fun onCreate() {

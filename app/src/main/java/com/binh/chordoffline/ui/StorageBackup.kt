@@ -31,6 +31,24 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         context.contentResolver.takePersistableUriPermission(uri, flags)
         treeUri?.takeIf { it != uri }?.let { old -> runCatching { context.contentResolver.releasePersistableUriPermission(old, flags) } }
         prefs.edit().putString("tree", uri.toString()).apply()
+        invalidateCache()
+    }
+
+    // ---- Bộ nhớ đệm thư mục: DocumentFile.findFile() liệt kê LẠI toàn bộ thư mục mỗi lần gọi
+    // (gần 2000 thư mục bài -> rất chậm). Liệt kê một lần, giữ bảng tên -> thư mục để tra nhanh.
+    private var cachedApp: DocumentFile? = null
+    private var cachedTree: Uri? = null
+    private var childDirs: MutableMap<String, DocumentFile>? = null
+
+    @Synchronized fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null }
+
+    private fun cachedAppDir(): DocumentFile {
+        val t = treeUri
+        cachedApp?.takeIf { cachedTree == t }?.let { return it }
+        val app = appDir(create = true) ?: error("Chưa chọn thư mục lưu hoặc mất quyền truy cập")
+        cachedApp = app; cachedTree = t
+        childDirs = app.listFiles().filter { it.isDirectory && it.name != null }.associateBy { it.name!! }.toMutableMap()
+        return app
     }
 
     /**
@@ -51,7 +69,7 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         .any { d -> d.findFile("song.cho") != null || d.findFile("page.html") != null }
 
     /** Ghi/đọc file phụ (tiến độ quét) ở thư mục gốc của bản sao lưu. */
-    fun writeExtra(name: String, text: String) {
+    @Synchronized fun writeExtra(name: String, text: String) {
         val app = appDir(create = true) ?: return
         val f = app.findFile(name) ?: app.createFile("application/octet-stream", name) ?: return
         context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(text.toByteArray()) }
@@ -68,13 +86,25 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         else -> "application/octet-stream"
     }
 
-    /** Sao lưu một bài; chỉ ghi file mới hoặc đã thay đổi kích thước. Trả về số file đã ghi. */
-    fun backupKey(key: String): Int {
-        val app = appDir(create = true) ?: error("Chưa chọn thư mục lưu hoặc mất quyền truy cập")
-        val dir = app.findFile(key) ?: app.createDirectory(key) ?: error("Không tạo được thư mục $key")
+    /**
+     * Sao lưu một bài; chỉ ghi file mới hoặc đã thay đổi kích thước. Trả về số file đã ghi.
+     * Dùng bộ nhớ đệm thư mục; nếu lỗi (thư mục bị xoá/đổi bên ngoài) thì làm mới bộ nhớ đệm và thử lại một lần.
+     */
+    @Synchronized fun backupKey(key: String): Int = try {
+        backupKeyCached(key)
+    } catch (e: Exception) {
+        invalidateCache()
+        backupKeyCached(key)
+    }
+
+    private fun backupKeyCached(key: String): Int {
+        val app = cachedAppDir()
+        val dirs = childDirs!!
+        val dir = dirs[key] ?: (app.createDirectory(key) ?: error("Không tạo được thư mục $key")).also { dirs[key] = it }
+        val existingFiles = dir.listFiles().filter { it.name != null }.associateBy { it.name!! }
         var written = 0
         for (f in store.filesOf(key)) {
-            val existing = dir.findFile(f.name)
+            val existing = existingFiles[f.name]
             if (existing != null && existing.length() == f.length()) continue
             val target = existing ?: dir.createFile(mime(f.name), f.name) ?: error("Không tạo được ${f.name}")
             context.contentResolver.openOutputStream(target.uri, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
@@ -85,7 +115,7 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
 
     data class Result(val songs: Int, val files: Int, val errors: List<String>)
 
-    fun backupAll(): Result {
+    @Synchronized fun backupAll(): Result {
         var songs = 0; var files = 0; val errors = mutableListOf<String>()
         for (k in store.keys()) {
             runCatching { files += backupKey(k); songs++ }.onFailure { errors += "$k: ${it.message}" }
