@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.binh.chordoffline.CrashLog
 import com.binh.chordoffline.DownloadService
+import com.binh.chordoffline.NewSongs
 import com.binh.chordoffline.core.*
 import com.binh.chordoffline.onBigStack
 import com.binh.chordoffline.net.FetchResult
@@ -83,6 +84,18 @@ data class BatchUi(
 
 /** Một bài tìm thấy khi quét trang danh mục, kèm trạng thái chọn để xem trước. */
 data class FoundItem(val song: FoundSong, val selected: Boolean, val alreadySaved: Boolean, val inQueue: Boolean)
+
+/** Thẻ "Bài mới trên Hợp Âm Việt": kết quả lần kiểm tra gần nhất + lựa chọn tải. */
+data class NewSongsUi(
+    val checking: Boolean = false,
+    val result: NewSongCheck.Result? = null,
+    /** Chỉ các bài còn CHƯA lưu & chưa trong hàng đợi. */
+    val items: List<FoundItem> = emptyList(),
+    val message: String? = null,
+    val isError: Boolean = false,
+    /** Tự kiểm tra mỗi ngày (khi có Wi-Fi) và báo bằng thông báo. */
+    val daily: Boolean = true,
+)
 
 /** Trạng thái phần "Lấy danh sách từ trang danh mục". */
 data class DiscoverUi(
@@ -377,7 +390,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val idx = withContext(Dispatchers.IO) { LibraryIndex.read(indexFile) }?.takeIf { it.isNotEmpty() }
             if (idx == null) { refreshLibrary(); return@launch }
             indexSavedRef = idx                       // vừa đọc từ mục lục -> không cần ghi lại
-            synchronized(libLock) { if (!libFullRunning) _library.value = idx }
+            // Đang có lượt quét toàn bộ (vd. vừa Khôi phục) -> để lượt đó báo xong; không hiện "0 bài" trong lúc chờ.
+            val applied = synchronized(libLock) { if (!libFullRunning) { _library.value = idx; true } else false }
+            if (!applied) return@launch
             _libraryLoading.value = false
             applyLibraryChanges()
             val (kept, missing) = withContext(Dispatchers.IO) { LibraryIndex.reconcile(idx, store.dirKeys()) }
@@ -1189,6 +1204,92 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         batchStart()
     }
 
+    // =====================================================================
+    // BÀI MỚI TRÊN HỢP ÂM VIỆT (v0.11): đọc trang "Hợp âm mới nhất", so với bài đã có.
+    // =====================================================================
+    private val _newSongs = MutableStateFlow(NewSongsUi(daily = NewSongs.isDailyEnabled(app)))
+    val newSongs: StateFlow<NewSongsUi> = _newSongs
+
+    private fun queuedKeysNow(): Set<String> =
+        if (_batch.value.queueLoading) NewSongs.queuedKeysFromFile(getApplication())
+        else _batch.value.queue.items.filter { it.state != ItemState.CANCELLED }.mapTo(HashSet()) { BatchQueue.dedupeKey(it.url) }
+
+    /** Dựng danh sách hiển thị từ kết quả: chỉ giữ bài CHƯA lưu & chưa trong hàng đợi (giữ lựa chọn cũ nếu có). */
+    private suspend fun showNewSongs(r: NewSongCheck.Result?, message: String?, isError: Boolean) {
+        val old = _newSongs.value.items.associateBy { BatchQueue.dedupeKey(it.song.url) }
+        val items = withContext(Dispatchers.IO) {
+            val known = NewSongs.knownChecker(store, queuedKeysNow())
+            r?.newSongs.orEmpty().filter { !known(it.url) }.map { s ->
+                FoundItem(s, selected = old[BatchQueue.dedupeKey(s.url)]?.selected ?: true, alreadySaved = false, inQueue = false)
+            }
+        }
+        _newSongs.update { it.copy(checking = false, result = r, items = items, message = message, isError = isError) }
+    }
+
+    /** Nạp kết quả lần kiểm tra gần nhất (vd. do việc chạy nền mỗi ngày ghi ra) — khi mở app / chạm thông báo. */
+    fun reloadNewSongs() {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { NewSongs.load(getApplication()) } ?: return@launch
+            showNewSongs(r, null, false)
+        }
+    }
+
+    fun checkNewSongs() {
+        if (_newSongs.value.checking) return
+        if (_discover.value.running) { _newSongs.update { it.copy(message = "Đang quét danh mục — thử lại sau.", isError = false) }; return }
+        _newSongs.update { it.copy(checking = true, message = "Đang kiểm tra trang \"Hợp âm mới nhất\"…", isError = false) }
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                NewSongCheck.run(
+                    fetch = { u ->
+                        kotlinx.coroutines.runBlocking { acquireShared() }      // dùng chung giới hạn tốc độ với việc tải
+                        lastRequestAt = System.currentTimeMillis()
+                        fetcher.fetch(u).also { lastResponseMs = it.elapsedMs; lastRequestAt = System.currentTimeMillis() }
+                            .let { NewSongCheck.Fetched(it.status, it.body, it.error) }
+                    },
+                    isKnown = NewSongs.knownChecker(store, queuedKeysNow()),
+                    pause = { Thread.sleep(pace()) },
+                    allowed = { path -> (robots ?: RobotsRules.FALLBACK_HOPAMVIET).isAllowed(path) },
+                )
+            }
+            if (r.error == null || r.newSongs.isNotEmpty()) withContext(Dispatchers.IO) { NewSongs.save(getApplication(), r) }
+            val msg = when {
+                r.error != null -> r.error
+                r.newSongs.isEmpty() -> "✅ Không có bài mới — mọi bài trong trang \"Hợp âm mới nhất\" đều đã có trong máy (${r.pagesRead} request)."
+                r.maybeGap -> "Có ${r.newSongs.size} bài mới. ⚠ Cả ${r.pagesRead} trang \"mới nhất\" đều là bài chưa có — có thể còn bài mới cũ hơn " +
+                    "đã trôi khỏi danh sách; nên quét lại các danh mục để chắc chắn đủ."
+                else -> "Có ${r.newSongs.size} bài mới chưa lưu (${r.pagesRead} request)."
+            }
+            showNewSongs(r, msg, r.error != null)
+        }
+    }
+
+    fun newSongToggle(url: String) = _newSongs.update { n ->
+        n.copy(items = n.items.map { if (it.song.url == url) it.copy(selected = !it.selected) else it })
+    }
+
+    fun newSongsSelect(all: Boolean) = _newSongs.update { n -> n.copy(items = n.items.map { it.copy(selected = all) }) }
+
+    /** Thêm các bài mới đã chọn vào hàng đợi rồi bắt đầu tải (như "Xác nhận & tải"). */
+    fun newSongsDownload() {
+        val urls = _newSongs.value.items.filter { it.selected }.map { it.song.url }
+        when {
+            urls.isEmpty() -> { _newSongs.update { it.copy(message = "Chưa chọn bài nào.", isError = true) }; return }
+            !_check.value.confirmed -> { _newSongs.update { it.copy(message = "Hãy tick xác nhận quyền lưu ở đầu màn hình trước.", isError = true) }; return }
+            queueNotReady() -> { _newSongs.update { it.copy(message = "Đang đọc hàng đợi… thử lại sau giây lát.", isError = false) }; return }
+        }
+        val r = batchAdd(urls.joinToString("\n"))
+        val added = urls.mapTo(HashSet()) { BatchQueue.dedupeKey(it) }
+        _newSongs.update { n -> n.copy(items = n.items.filter { BatchQueue.dedupeKey(it.song.url) !in added },
+            message = "Đã thêm ${r.added} bài mới vào hàng đợi" + (if (r.duplicates > 0) " (bỏ ${r.duplicates} trùng)" else "") + ".", isError = false) }
+        if (_batch.value.queue.hasPending && !_batch.value.running) batchStart()
+    }
+
+    fun setDailyNewCheck(on: Boolean) {
+        NewSongs.setDailyEnabled(getApplication(), on)
+        _newSongs.update { it.copy(daily = on) }
+    }
+
     /** Nhập file TXT (mỗi dòng một link). Giới hạn 1 MB. */
     fun batchImportTxt(uri: Uri, name: String?) {
         viewModelScope.launch {
@@ -1296,6 +1397,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         observeForeground()
         observeLibrary()
         loadLibraryAtStart()
+        reloadNewSongs()
         // Đọc hàng đợi ở luồng nền: giao diện hiện ngay, không còn màn hình trắng vài giây lúc mở app.
         viewModelScope.launch {
             val q = withContext(Dispatchers.IO) { loadBatch() }

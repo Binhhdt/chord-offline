@@ -38,7 +38,7 @@ object CrashLog {
     fun stackTrace(e: Throwable): String = StringWriter().also { e.printStackTrace(PrintWriter(it)) }.toString()
 }
 
-object BuildConfigInfo { const val VERSION = "0.10.1" }
+object BuildConfigInfo { const val VERSION = "0.11.0" }
 
 /** Số phiên bản đọc từ chính gói APK đang cài (luôn đúng với bản đang chạy). */
 object AppVersion {
@@ -58,6 +58,7 @@ class ChordApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        NewSongs.schedule(this)          // tự kiểm tra bài mới mỗi ngày (nếu đang bật)
     }
 }
 

@@ -129,6 +129,24 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.11.0: kiểm tra bài mới trên Hợp Âm Việt (A + B) + sửa tab Đã lưu
+
+**Sửa lỗi:** bấm tab "Đã lưu" ở thanh dưới vẫn gọi lệnh đọc lại **toàn bộ** thư viện (~15 giây với 47.565 bài). Lệnh này chạy trùng lúc app nạp mục lục nên màn hình báo "0/0 bài". Giờ bấm tab chỉ ghép các bài vừa thay đổi. Nếu đang có lượt đọc toàn bộ (ví dụ vừa Khôi phục), màn hình vẫn hiện "Đang tải thư viện…" tới khi xong.
+
+**A. Nút "Kiểm tra bài mới"** (tab Tải nhiều, thẻ 🆕 "Bài mới trên Hợp Âm Việt"; `core/NewSongCheck.kt`):
+- App đọc trang **"Hợp âm mới nhất"** (`/chord/latest`, robots.txt cho phép). Trang này có khoảng 150 bài mới nhất, 30 bài mỗi trang.
+- Đọc từ trang 1. Gặp bài đã có trong máy hoặc trong hàng đợi thì dừng, vì các bài phía sau đều cũ hơn. Thường chỉ tốn **1–2 request**, tối đa 5. Giữa các trang app vẫn nghỉ, và dùng chung giới hạn tốc độ với việc tải.
+- App hiện danh sách bài mới chưa lưu, có ô chọn, rồi bấm **"Tải N bài mới đã chọn"** (cần tick xác nhận quyền lưu).
+- Nếu cả 5 trang đều là bài chưa có, app cảnh báo có thể còn bài mới cũ hơn đã trôi khỏi danh sách, và gợi ý quét lại danh mục.
+- Gặp 403/429/503 hoặc trang xác minh thì dừng, không thử vượt qua.
+
+**B. Tự kiểm tra mỗi ngày** (công tắc trong thẻ trên, mặc định bật):
+- Dùng WorkManager, chạy một lần mỗi ngày và **chỉ khi có Wi-Fi**. Lần đầu chạy sau khi mở app khoảng 1 giờ.
+- Có bài mới **chưa từng báo** thì hiện thông báo "Hợp Âm Việt có bài mới". Chạm vào thông báo sẽ mở tab Tải nhiều cùng danh sách để chọn tải.
+- App **không tự tải**. Lỗi mạng thì WorkManager tự thử lại sau. Website giới hạn hoặc chặn thì app bỏ qua hôm đó.
+- Android 13 trở lên: app xin quyền thông báo một lần.
+- Kết quả lần kiểm tra gần nhất được lưu ở `new_songs.tsv`.
+
 ## v0.10.1: sửa sổ mục lục bị rỗng
 
 Video của người dùng với v0.10.0: mở app đã nhanh, nhưng tab Đã lưu vẫn hiện "0/0 bài · Chưa lưu bài nào" khoảng 15 giây rồi mới ra 47.565 bài, và lặp lại y hệt ở lần mở sau.

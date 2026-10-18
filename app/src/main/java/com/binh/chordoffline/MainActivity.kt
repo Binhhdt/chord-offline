@@ -32,19 +32,33 @@ import com.binh.chordoffline.ui.LibraryScreen
 import com.binh.chordoffline.ui.PageViewer
 
 class MainActivity : ComponentActivity() {
+    /** Tab cần mở khi app được mở từ thông báo "bài mới" (null = không đổi). */
+    private val openTab = mutableStateOf<Int?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openTab.value = intent?.getIntExtra(NewSongs.EXTRA_OPEN_TAB, -1)?.takeIf { it >= 0 }
         setContent {
-            ChordTheme { AppRoot() }
+            ChordTheme { AppRoot(openTab) }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getIntExtra(NewSongs.EXTRA_OPEN_TAB, -1).takeIf { it >= 0 }?.let { openTab.value = it }
     }
 }
 
 private data class Viewing(val key: String, val version: Version)
 
 @Composable
-private fun AppRoot(vm: AppViewModel = viewModel()) {
+private fun AppRoot(openTab: MutableState<Int?>, vm: AppViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    // Mở từ thông báo "Hợp Âm Việt có bài mới" -> sang tab Tải nhiều và nạp danh sách bài mới
+    LaunchedEffect(openTab.value) {
+        openTab.value?.let { t -> tab = t; vm.reloadNewSongs(); openTab.value = null }
+    }
     var viewing by remember { mutableStateOf<Viewing?>(null) }
 
     // Giữ màn hình sáng khi đang quét / tải / chạy tự động (ở bất kỳ tab nào) để Android không tạm dừng app
@@ -57,6 +71,10 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
     val ctx = LocalContext.current
     var askedNotif by rememberSaveable { mutableStateOf(false) }
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    // Tự kiểm tra bài mới mỗi ngày đang bật -> xin quyền thông báo một lần (Android 13+)
+    LaunchedEffect(Unit) {
+        if (NewSongs.shouldAskNotificationPermission(ctx)) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
     LaunchedEffect(busy) {
         if (busy && !askedNotif && Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -75,7 +93,7 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
             NavigationBar {
                 NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
                     icon = { Text("🔍") }, label = { Text("Kiểm tra URL") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; vm.refreshLibrary() },
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; vm.refreshLibraryIfNeeded() },
                     icon = { Text("📚") }, label = { Text("Đã lưu") })
                 NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                     icon = { Text("📥") }, label = { Text("Tải nhiều") })

@@ -71,6 +71,9 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
                 Text("Tôi có quyền lưu các bài này, chỉ dùng cá nhân/phi thương mại, giữ ghi nguồn và không chia sẻ lại.",
                     style = MaterialTheme.typography.bodySmall)
             }
+            Spacer(Modifier.height(4.dp))
+            NewSongsCard(vm, check.confirmed)
+            Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = mode == 0, onClick = { mode = 0 }, label = { Text("Từ trang danh mục") })
                 FilterChip(selected = mode == 1, onClick = { mode = 1 }, label = { Text("Dán link / TXT") })
@@ -395,5 +398,52 @@ private fun AutoCard(vm: AppViewModel, a: AutoUi, d: DiscoverUi, b: BatchUi, con
         }
         a.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
             color = if (a.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+/** "Bài mới trên Hợp Âm Việt": nút kiểm tra, danh sách bài mới chưa lưu (chọn & tải), bật/tắt tự kiểm tra mỗi ngày. */
+@Composable
+private fun NewSongsCard(vm: AppViewModel, confirmed: Boolean) {
+    val n by vm.newSongs.collectAsState()
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    SectionCard("🆕 Bài mới trên Hợp Âm Việt") {
+        Text("So trang \"Hợp âm mới nhất\" của website với các bài bạn đã lưu (thường chỉ 1–2 request).",
+            style = MaterialTheme.typography.bodySmall)
+        n.result?.let { r ->
+            Text("Kiểm tra lần cuối: ${AppViewModel.fmt(r.checkedAt)}", style = MaterialTheme.typography.labelSmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = vm::checkNewSongs, enabled = !n.checking) { Text(if (n.checking) "Đang kiểm tra…" else "Kiểm tra bài mới") }
+            if (n.checking) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        n.message?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+            color = if (n.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (n.items.isNotEmpty()) {
+            val sel = n.items.count { it.selected }
+            Text("${n.items.size} bài mới chưa lưu · đã chọn $sel", fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { vm.newSongsSelect(true) }) { Text("Chọn tất cả") }
+                TextButton(onClick = { vm.newSongsSelect(false) }) { Text("Bỏ chọn") }
+                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "▲ Ẩn" else "▼ Xem") }
+            }
+            if (expanded) n.items.forEach { fi ->
+                Row(Modifier.fillMaxWidth().clickable { vm.newSongToggle(fi.song.url) }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = fi.selected, onCheckedChange = { vm.newSongToggle(fi.song.url) })
+                    Column(Modifier.weight(1f)) {
+                        Text(fi.song.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        fi.song.artist?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                }
+            }
+            Button(onClick = vm::newSongsDownload, enabled = sel > 0 && confirmed, modifier = Modifier.fillMaxWidth()) {
+                Text("Tải $sel bài mới đã chọn")
+            }
+            if (!confirmed) Text("Tick ô xác nhận quyền lưu ở trên để tải.", style = MaterialTheme.typography.labelSmall)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = n.daily, onCheckedChange = vm::setDailyNewCheck)
+            Spacer(Modifier.width(8.dp))
+            Text("Tự kiểm tra mỗi ngày (khi có Wi-Fi) và báo khi có bài mới", style = MaterialTheme.typography.bodySmall)
+        }
     }
 }

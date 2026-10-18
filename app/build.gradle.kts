@@ -12,8 +12,8 @@ android {
         applicationId = "com.binh.chordoffline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.10.1"
+        versionCode = 20
+        versionName = "0.11.0"
     }
 
     // Chữ ký CỐ ĐỊNH cho mọi bản build (kể cả trên GitHub Actions): Android chỉ cho cài đè bản mới
@@ -54,6 +54,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.1")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    // Tự kiểm tra bài mới mỗi ngày (chạy nền, chỉ khi có Wi-Fi)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
 }
