@@ -38,7 +38,7 @@ object CrashLog {
     fun stackTrace(e: Throwable): String = StringWriter().also { e.printStackTrace(PrintWriter(it)) }.toString()
 }
 
-object BuildConfigInfo { const val VERSION = "0.10.0" }
+object BuildConfigInfo { const val VERSION = "0.10.1" }
 
 /** Số phiên bản đọc từ chính gói APK đang cài (luôn đúng với bản đang chạy). */
 object AppVersion {

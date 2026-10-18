@@ -345,6 +345,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val again = synchronized(libLock) {
                         _library.value = list
                         _libraryLoading.value = false
+                        saveIndexNow()                 // vừa quét toàn bộ -> ghi mục lục ngay
                         libChanged.removeAll(before)   // đã nằm trong lượt đọc toàn bộ; bài lưu trong lúc đọc vẫn được ghép sau
                         val a = libFullAgain; libFullAgain = false; a
                     }
@@ -372,7 +373,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun loadLibraryAtStart() {
         viewModelScope.launch {
-            val idx = withContext(Dispatchers.IO) { LibraryIndex.read(indexFile) }
+            // Mục lục rỗng thì KHÔNG tin (v0.10.0 có thể đã ghi mục lục rỗng) -> quét toàn bộ rồi ghi lại ngay.
+            val idx = withContext(Dispatchers.IO) { LibraryIndex.read(indexFile) }?.takeIf { it.isNotEmpty() }
             if (idx == null) { refreshLibrary(); return@launch }
             indexSavedRef = idx                       // vừa đọc từ mục lục -> không cần ghi lại
             synchronized(libLock) { if (!libFullRunning) _library.value = idx }
@@ -389,20 +391,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _library.value = added.sortedByDescending { it.lastSavedMillis } +
                     _library.value.filter { it.key !in gone && it.key !in addedKeys }
             }
+            saveIndexNow()                            // ghi ngay: tắt app sớm cũng không phải đối chiếu lại lần sau
         }
+    }
+
+    private val indexWriteLock = Any()
+    /** Ghi sổ mục lục (một luồng ghi tại một thời điểm). Không bao giờ ghi khi thư viện còn đang nạp. */
+    private fun writeIndex(list: List<SavedSong>) {
+        if (_libraryLoading.value || list.isEmpty()) return     // không bao giờ ghi mục lục rỗng
+        synchronized(indexWriteLock) {
+            if (list === indexSavedRef) return
+            runCatching { LibraryIndex.write(indexFile, list); indexSavedRef = list }
+        }
+    }
+
+    private fun saveIndexNow() {
+        viewModelScope.launch(Dispatchers.IO) { writeIndex(_library.value) }
     }
 
     @Volatile private var indexSaveScheduled = false
     @Volatile private var indexSavedRef: List<SavedSong>? = null
-    /** Ghi sổ mục lục gộp (tối đa mỗi 5 giây) mỗi khi thư viện thay đổi. */
+    /** Ghi sổ mục lục gộp (sau 2 giây) mỗi khi thư viện thay đổi. */
     private fun scheduleIndexSave() {
         if (indexSaveScheduled) return
         indexSaveScheduled = true
         viewModelScope.launch(Dispatchers.IO) {
-            delay(5_000)
+            delay(2_000)
             indexSaveScheduled = false
-            val list = _library.value
-            if (list !== indexSavedRef) runCatching { LibraryIndex.write(indexFile, list); indexSavedRef = list }
+            writeIndex(_library.value)
         }
     }
 
@@ -1270,7 +1286,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _batch.update { it.copy(queue = it.queue.recoverAfterRestart()) }; queueDirty = true
         }
         flushQueue()                      // ghi đồng bộ lần cuối (app đang đóng)
-        if (indexSaveScheduled) runCatching { LibraryIndex.write(indexFile, _library.value) }
+        if (indexSaveScheduled) writeIndex(_library.value)
         queueWriter.close()
         super.onCleared()
     }

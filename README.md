@@ -129,6 +129,20 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.10.1: sửa sổ mục lục bị rỗng
+
+Video của người dùng với v0.10.0: mở app đã nhanh, nhưng tab Đã lưu vẫn hiện "0/0 bài · Chưa lưu bài nào" khoảng 15 giây rồi mới ra 47.565 bài, và lặp lại y hệt ở lần mở sau.
+
+**Nguyên nhân:**
+- File mục lục bị ghi ở trạng thái rỗng. App tin file đó, rồi lúc đối chiếu thấy 47.565 thư mục "mới" nên đọc từng bài một, chậm như quét toàn bộ.
+- Mục lục đúng chỉ được ghi sau 5 giây. Người dùng tắt app trước đó, nên lần mở sau vẫn gặp mục lục rỗng.
+
+**Cách sửa:**
+- Mục lục rỗng không được tin, app quét toàn bộ.
+- App **không bao giờ ghi** mục lục rỗng, và không ghi khi thư viện còn đang nạp.
+- Mục lục được ghi **ngay** sau khi quét toàn bộ hoặc sau khi đối chiếu có thay đổi. Các thay đổi khác được ghi gộp sau 2 giây.
+- Chỉ một luồng được ghi mục lục tại một thời điểm.
+
 ## v0.10.0: mở app & thư viện nhanh hơn, tìm kiếm nhanh, sửa lỗi văng app, hiện số phiên bản
 
 Video của người dùng (thư viện 47.565 bài): mở app bị màn hình trắng ~4 giây, tab Đã lưu mất ~21 giây mới hiện danh sách (trong lúc chờ lại báo "Chưa lưu bài nào"), bấm Tìm mất ~4 giây, và lần chạy trước bị văng app với lỗi `ForegroundServiceDidNotStartInTimeException`.
