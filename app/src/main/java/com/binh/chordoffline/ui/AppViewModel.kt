@@ -14,7 +14,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.sync.Mutex
@@ -75,6 +77,8 @@ data class BatchUi(
     val retryOnly: Int? = null,
     /** Việc phụ còn chờ (ảnh YouTube, sao lưu) — chạy nền sau khi lưu. */
     val postPending: Int = 0,
+    /** Đang đọc file hàng đợi lúc mở app. */
+    val queueLoading: Boolean = false,
 )
 
 /** Một bài tìm thấy khi quét trang danh mục, kèm trạng thái chọn để xem trước. */
@@ -132,6 +136,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _library = MutableStateFlow<List<SavedSong>>(emptyList())
     val library: StateFlow<List<SavedSong>> = _library
+    /** true cho tới khi đọc xong thư viện lần đầu (từ sổ mục lục hoặc quét thư mục). */
+    private val _libraryLoading = MutableStateFlow(true)
+    val libraryLoading: StateFlow<Boolean> = _libraryLoading
+    /** Chỉ mục tìm kiếm (bản bỏ dấu tính sẵn) — dựng ở luồng nền mỗi khi thư viện đổi. */
+    private val _searchIndex = MutableStateFlow<List<LibrarySearch.Entry>>(emptyList())
+    val searchIndex: StateFlow<List<LibrarySearch.Entry>> = _searchIndex
+    /** Sổ mục lục thư viện (v0.10): mở app chỉ đọc file này thay vì ~5 file của từng bài. */
+    private val indexFile = File(app.filesDir, "library_index.tsv")
 
     private var robots: RobotsRules? = null
     @Volatile private var lastRequestAt = 0L
@@ -139,7 +151,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Tải nhiều ----------
     private val batchFile = File(app.filesDir, "batch_queue.tsv")
-    private val _batch = MutableStateFlow(BatchUi(queue = loadBatch()))
+    // Hàng đợi được đọc ở luồng nền lúc mở app (file có thể hàng chục nghìn dòng) — xem init ở cuối class.
+    private val _batch = MutableStateFlow(BatchUi(queueLoading = true))
+    /** Luồng riêng, tuần tự để ghi file hàng đợi (không ghi trên luồng giao diện, không ghi lẫn thứ tự). */
+    private val queueWriter = java.util.concurrent.Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     val batch: StateFlow<BatchUi> = _batch
     private var batchJob: Job? = null
 
@@ -329,6 +344,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val list = withContext(Dispatchers.IO) { store.list() }
                     val again = synchronized(libLock) {
                         _library.value = list
+                        _libraryLoading.value = false
                         libChanged.removeAll(before)   // đã nằm trong lượt đọc toàn bộ; bài lưu trong lúc đọc vẫn được ghép sau
                         val a = libFullAgain; libFullAgain = false; a
                     }
@@ -345,9 +361,62 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var libFullAgain = false
     private val libChanged = LinkedHashSet<String>()
 
-    /** Mở tab "Đã lưu": lần đầu đọc toàn bộ; các lần sau chỉ ghép các bài vừa thay đổi (không đọc lại 15.000 bài). */
+    /** Mở tab "Đã lưu": thư viện đã được nạp lúc mở app -> chỉ ghép các bài vừa thay đổi. */
     fun refreshLibraryIfNeeded() {
-        if (_library.value.isEmpty()) refreshLibrary() else viewModelScope.launch { applyLibraryChanges() }
+        if (!_libraryLoading.value) viewModelScope.launch { applyLibraryChanges() }
+    }
+
+    /**
+     * Mở app: đọc sổ mục lục (1 file) rồi hiện ngay; sau đó đối chiếu với danh sách thư mục bài (1 lần liệt kê)
+     * để thêm bài mới / bỏ bài đã xoá. Chưa có hoặc hỏng mục lục -> quét toàn bộ như trước rồi tạo mục lục.
+     */
+    private fun loadLibraryAtStart() {
+        viewModelScope.launch {
+            val idx = withContext(Dispatchers.IO) { LibraryIndex.read(indexFile) }
+            if (idx == null) { refreshLibrary(); return@launch }
+            indexSavedRef = idx                       // vừa đọc từ mục lục -> không cần ghi lại
+            synchronized(libLock) { if (!libFullRunning) _library.value = idx }
+            _libraryLoading.value = false
+            applyLibraryChanges()
+            val (kept, missing) = withContext(Dispatchers.IO) { LibraryIndex.reconcile(idx, store.dirKeys()) }
+            val added = withContext(Dispatchers.IO) { missing.mapNotNull { store.load(it) } }
+            if (kept.size == idx.size && added.isEmpty()) return@launch
+            val keptKeys = kept.mapTo(HashSet()) { it.key }
+            val gone = idx.filter { it.key !in keptKeys }.mapTo(HashSet()) { it.key }
+            val addedKeys = added.mapTo(HashSet()) { it.key }
+            synchronized(libLock) {
+                if (libFullRunning) return@launch
+                _library.value = added.sortedByDescending { it.lastSavedMillis } +
+                    _library.value.filter { it.key !in gone && it.key !in addedKeys }
+            }
+        }
+    }
+
+    @Volatile private var indexSaveScheduled = false
+    @Volatile private var indexSavedRef: List<SavedSong>? = null
+    /** Ghi sổ mục lục gộp (tối đa mỗi 5 giây) mỗi khi thư viện thay đổi. */
+    private fun scheduleIndexSave() {
+        if (indexSaveScheduled) return
+        indexSaveScheduled = true
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(5_000)
+            indexSaveScheduled = false
+            val list = _library.value
+            if (list !== indexSavedRef) runCatching { LibraryIndex.write(indexFile, list); indexSavedRef = list }
+        }
+    }
+
+    /** Thư viện đổi -> dựng lại chỉ mục tìm kiếm (dùng lại phần không đổi) và hẹn ghi sổ mục lục. */
+    private fun observeLibrary() {
+        viewModelScope.launch {
+            var first = true
+            _library.collectLatest { list ->
+                val prev = _searchIndex.value
+                _searchIndex.value = withContext(Dispatchers.Default) { LibrarySearch.index(list, prev) }
+                if (!first && !_libraryLoading.value && list !== indexSavedRef) scheduleIndexSave()
+                first = false
+            }
+        }
     }
 
     /** Ghi nhận bài vừa lưu; thư viện được cập nhật từng phần (chỉ đọc các bài này) theo nhịp. */
@@ -355,6 +424,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Đọc các bài vừa thay đổi rồi ghép vào danh sách hiện có (bài mới lưu lên đầu, đúng thứ tự "Mới lưu"). */
     private suspend fun applyLibraryChanges() {
+        if (_libraryLoading.value) return          // chưa nạp xong thư viện: giữ lại các thay đổi để ghép sau
         val keys = synchronized(libLock) { if (libFullRunning || libChanged.isEmpty()) return; libChanged.toList().also { libChanged.clear() } }
         val loaded = withContext(Dispatchers.IO) { keys.mapNotNull { k -> store.load(k) } }
         synchronized(libLock) {
@@ -394,15 +464,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Đổi hàng đợi. [persist] = true: ghi ngay ra file (thao tác của người dùng).
      * Trong lúc tải: persist = false, chỉ đánh dấu "bẩn" — bộ đếm nhịp ghi gộp mỗi 3 giây và khi dừng.
      */
-    private fun setQueue(persist: Boolean = true, f: (BatchQueue) -> BatchQueue) = synchronized(batchLock) {
-        val q = f(_batch.value.queue)
-        _batch.update { it.copy(queue = q) }
-        if (persist) writeQueue(q) else queueDirty = true
-        q
+    private fun setQueue(persist: Boolean = true, f: (BatchQueue) -> BatchQueue): BatchQueue {
+        val q = synchronized(batchLock) {
+            val q = f(_batch.value.queue)
+            _batch.update { it.copy(queue = q) }
+            queueDirty = true
+            q
+        }
+        // thao tác của người dùng: ghi ngay nhưng ở luồng ghi riêng (file hàng chục nghìn dòng không ghi trên luồng giao diện)
+        if (persist) viewModelScope.launch(queueWriter) { flushQueue() }
+        return q
     }
 
     private fun writeQueue(q: BatchQueue) {
         queueDirty = false
+        if (_batch.value.queueLoading) return      // chưa đọc xong file cũ -> tuyệt đối không ghi đè
         runCatching {
             val tmp = File(batchFile.parentFile, batchFile.name + ".tmp")
             tmp.writeText(q.serialize())
@@ -410,7 +486,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun flushQueue() = synchronized(batchLock) { if (queueDirty) writeQueue(_batch.value.queue) }
+    /** Ghi hàng đợi nếu có thay đổi: chụp trạng thái trong khoá, ghi file ngoài khoá. */
+    private fun flushQueue() {
+        val q = synchronized(batchLock) {
+            if (!queueDirty || _batch.value.queueLoading) return
+            queueDirty = false
+            _batch.value.queue
+        }
+        writeQueue(q)
+    }
+
+    /** Hàng đợi chưa đọc xong lúc mở app -> chưa cho thao tác (tránh ghi đè hàng đợi cũ). */
+    private fun queueNotReady(): Boolean {
+        if (!_batch.value.queueLoading) return false
+        _batch.update { it.copy(message = "Đang đọc hàng đợi… thử lại sau giây lát.") }
+        return true
+    }
 
     // ---------- Cài đặt tải song song ----------
     private val _workers = MutableStateFlow(DownloadConfig.clampWorkers(displayPrefs.getInt("batch_workers", DownloadConfig.MAX_WORKERS)))
@@ -425,6 +516,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var retryScope: Set<String>? = null
 
     fun batchAdd(text: String): AddResult {
+        if (queueNotReady()) return AddResult(0, 0, listOf("(hàng đợi)" to "Đang đọc hàng đợi lúc mở app — thử lại sau giây lát"))
         var result = AddResult(0, 0, emptyList())
         setQueue { q -> q.add(text).also { result = it.second }.first }
         if (!_batch.value.running && result.added > 0) retryScope = null
@@ -433,7 +525,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun batchOptions(compact: Boolean, page: Boolean) {
-        if (_batch.value.running) return
+        if (_batch.value.running || queueNotReady()) return
         setQueue { it.copy(saveCompact = compact, savePage = page) }
     }
 
@@ -441,6 +533,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** [fromAuto]: chế độ Tự động được phép tải trong lúc đang quét vòng sau (dùng chung cổng tốc độ). */
     private fun batchStart(fromAuto: Boolean) {
+        if (queueNotReady()) return
         val b = _batch.value
         retryScope?.let { s -> if (b.queue.pendingCount(s) == 0) retryScope = null }
         when {
@@ -461,6 +554,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun batchCancel() {
+        if (queueNotReady()) return
         batchJob?.cancel()
         batchJob = null
         retryScope = null
@@ -471,7 +565,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Thử lại CHỈ các mục lỗi/đã huỷ — không đụng tới các mục đang chờ khác. */
     fun batchRetryFailed() {
-        if (_batch.value.running) return
+        if (_batch.value.running || queueNotReady()) return
         val failed = _batch.value.queue.failedUrls()
         if (failed.isEmpty()) return
         setQueue { it.retryFailed() }
@@ -479,9 +573,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         batchStart()
     }
 
-    fun batchClearDone() { if (!_batch.value.running) setQueue { it.clearDone() } }
+    fun batchClearDone() { if (!_batch.value.running && !queueNotReady()) setQueue { it.clearDone() } }
     fun batchClearAll() {
-        if (!_batch.value.running) { retryScope = null; setQueue { it.clearAll() }; _batch.update { it.copy(lastAdd = null, message = null, retryOnly = null) } }
+        if (!_batch.value.running && !queueNotReady()) { retryScope = null; setQueue { it.clearAll() }; _batch.update { it.copy(lastAdd = null, message = null, retryOnly = null) } }
     }
 
     // ---------- Cổng tốc độ DÙNG CHUNG cho tải bài và quét danh mục (tổng ≤ ~3 request/giây) ----------
@@ -603,7 +697,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val (rate, eta) = synchronized(meter) { meter.rate(now) to meter.etaSeconds(left, now) }
                         val limit = gateLock.withLock { adapt.limit }
                         _batch.update { it.copy(rate = rate, etaSec = eta, workerLimit = limit, currentUrls = inFlight.toList()) }
-                        if (++ticks % 3 == 0) withContext(Dispatchers.IO) { flushQueue() }
+                        if (++ticks % 3 == 0) withContext(queueWriter) { flushQueue() }
                     }
                 }
                 (0 until n).map { idx -> launch(Dispatchers.IO) { worker(idx) } }.joinAll()
@@ -613,7 +707,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             gate.intervalMs = DownloadConfig.minIntervalMs
             batchInterrupted = !completed || stop.get() != null || _batch.value.pauseRequested
-            withContext(NonCancellable + Dispatchers.IO) { flushQueue() }
+            withContext(NonCancellable + queueWriter) { flushQueue() }
             withContext(NonCancellable) { applyLibraryChanges() }
             val stopMessage = stop.get() ?: if (_batch.value.pauseRequested) "Đã tạm dừng. Bấm Tiếp tục để tải tiếp." else null
             retryScope?.let { s -> if (_batch.value.queue.pendingCount(s) == 0) retryScope = null }
@@ -784,6 +878,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setDiscoverPages(n: Int) = _discover.update { it.copy(maxPages = n.coerceIn(1, ListingPolicy.MAX_PAGES_LIMIT)) }
 
     fun discoverStart() {
+        if (queueNotReady()) { _discover.update { it.copy(message = "Đang đọc hàng đợi… thử lại sau giây lát.", isError = false) }; return }
         val d = _discover.value
         if (d.running) return
         ListingPolicy.validate(d.url)?.let { why -> _discover.update { it.copy(message = why, isError = true) }; return }
@@ -799,6 +894,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Bài đã lưu/đã trong hàng đợi vẫn được bỏ chọn sẵn.
      */
     fun discoverContinue() {
+        if (queueNotReady()) { _discover.update { it.copy(message = "Đang đọc hàng đợi… thử lại sau giây lát.", isError = false) }; return }
         val d = _discover.value
         val from = d.resumeUrl ?: return
         if (d.running) return
@@ -818,6 +914,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var autoJob: Job? = null
 
     fun autoStart() {
+        if (queueNotReady()) { _auto.update { it.copy(message = "Đang đọc hàng đợi… thử lại sau giây lát.", isError = false) }; return }
         val d = _discover.value
         when {
             _auto.value.active || d.running || _batch.value.running -> return
@@ -1169,12 +1266,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         DownloadService.stop(getApplication())
         // ViewModel bị huỷ (thoát app): mục đang tải quay về "Chờ" để lần sau tiếp tục.
-        if (_batch.value.running) setQueue { it.recoverAfterRestart() } else flushQueue()
+        if (_batch.value.running) synchronized(batchLock) {
+            _batch.update { it.copy(queue = it.queue.recoverAfterRestart()) }; queueDirty = true
+        }
+        flushQueue()                      // ghi đồng bộ lần cuối (app đang đóng)
+        if (indexSaveScheduled) runCatching { LibraryIndex.write(indexFile, _library.value) }
+        queueWriter.close()
         super.onCleared()
     }
 
     // Đặt ở CUỐI class: mọi StateFlow (_batch, _discover, _auto, _delayMs) đã được khởi tạo xong.
-    init { observeForeground() }
+    init {
+        observeForeground()
+        observeLibrary()
+        loadLibraryAtStart()
+        // Đọc hàng đợi ở luồng nền: giao diện hiện ngay, không còn màn hình trắng vài giây lúc mở app.
+        viewModelScope.launch {
+            val q = withContext(Dispatchers.IO) { loadBatch() }
+            synchronized(batchLock) { _batch.update { it.copy(queue = q, queueLoading = false) } }
+        }
+    }
 
     companion object {
         const val BATCH_DELAY_MS = 3_000L

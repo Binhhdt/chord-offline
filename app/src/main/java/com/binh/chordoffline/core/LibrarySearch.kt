@@ -26,6 +26,47 @@ object LibrarySearch {
         return r
     }
 
+    /** Một bài kèm bản bỏ dấu tính sẵn của tên bài / ca sĩ / nhạc sĩ (tính một lần khi đọc thư viện). */
+    class Entry(val song: SavedSong) {
+        val title = fold(song.title)
+        val singers = fold(song.singers)
+        val composers = fold(song.composers)
+        val all = listOf(title, singers, composers).filter { it.isNotEmpty() }.joinToString(" ")
+        fun field(f: SearchField) = when (f) {
+            SearchField.TITLE -> title; SearchField.SINGER -> singers; SearchField.COMPOSER -> composers; SearchField.ALL -> all
+        }
+    }
+
+    /**
+     * Dựng chỉ mục cho cả thư viện. [previous]: chỉ mục cũ — bài không đổi (cùng đối tượng) được dùng lại,
+     * nên cập nhật từng phần (vài bài mới lưu) gần như tức thì.
+     */
+    fun index(songs: List<SavedSong>, previous: List<Entry> = emptyList()): List<Entry> {
+        val old = if (previous.isEmpty()) emptyMap() else previous.associateBy { it.song.key }
+        return songs.map { s -> old[s.key]?.takeIf { it.song === s || it.song == s } ?: Entry(s) }
+    }
+
+    fun filterIndexed(entries: List<Entry>, query: String, field: SearchField = SearchField.ALL, sort: SortMode = SortMode.RECENT): List<SavedSong> {
+        val tokens = fold(query).split(' ').filter { it.isNotEmpty() }
+        val hit = if (tokens.isEmpty()) entries else entries.filter { e -> val hay = e.field(field); tokens.all { it in hay } }
+        val sorted = when (sort) {
+            SortMode.RECENT -> hit.sortedByDescending { it.song.lastSavedMillis }
+            SortMode.TITLE -> hit.sortedBy { it.title }
+            SortMode.COMPOSER -> hit.sortedWith(compareBy<Entry>({ it.composers.isEmpty() }, { it.composers }, { it.title }))
+            SortMode.SINGER -> hit.sortedWith(compareBy<Entry>({ it.singers.isEmpty() }, { it.singers }, { it.title }))
+        }
+        return sorted.map { it.song }
+    }
+
+    fun suggestIndexed(entries: List<Entry>, query: String, limit: Int = 6): List<SavedSong> {
+        val q = fold(query)
+        if (q.isEmpty()) return emptyList()
+        val tokens = q.split(' ').filter { it.isNotEmpty() }
+        fun rank(e: Entry) = when { e.title.startsWith(q) -> 0; e.title.contains(q) -> 1; else -> 2 }
+        return entries.asSequence().filter { e -> tokens.all { it in e.all } }.toList()
+            .sortedWith(compareBy<Entry>({ rank(it) }, { it.title })).take(limit).map { it.song }
+    }
+
     private fun fields(s: SavedSong, f: SearchField): String = when (f) {
         SearchField.TITLE -> s.title
         SearchField.SINGER -> s.singers.orEmpty()

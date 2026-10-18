@@ -129,6 +129,27 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.10.0: mở app & thư viện nhanh hơn, tìm kiếm nhanh, sửa lỗi văng app, hiện số phiên bản
+
+Video của người dùng (thư viện 47.565 bài): mở app bị màn hình trắng ~4 giây, tab Đã lưu mất ~21 giây mới hiện danh sách (trong lúc chờ lại báo "Chưa lưu bài nào"), bấm Tìm mất ~4 giây, và lần chạy trước bị văng app với lỗi `ForegroundServiceDidNotStartInTimeException`.
+
+- **Sửa lỗi văng app:** dịch vụ chạy nền luôn gọi `startForeground()` trước. Nếu app muốn dừng trong lúc dịch vụ chưa kịp hiện thông báo, dịch vụ tự dừng ngay sau đó thay vì bị `stopService()` cắt ngang. Trên Android 15, việc bị cắt ngang này làm app bị đóng.
+- **A. Sổ mục lục thư viện** (`library_index.tsv`, `core/LibraryIndex.kt`):
+  - Thông tin mọi bài nằm trong một file. Mở app chỉ đọc file này, sau đó đối chiếu với **một lần liệt kê thư mục** để thêm bài mới và bỏ bài đã xoá.
+  - Mục lục được ghi gộp mỗi khi thư viện đổi, tối đa mỗi 5 giây, theo kiểu ghi file tạm rồi đổi tên.
+  - Chưa có mục lục, mục lục hỏng, hoặc vừa Khôi phục từ thư mục sao lưu: app quét toàn bộ như trước rồi tạo lại mục lục.
+  - Trong lúc đọc, màn hình hiện "Đang tải thư viện…" thay vì "Chưa lưu bài nào".
+- **B. Tìm kiếm nhanh:**
+  - App tính sẵn bản bỏ dấu của tên bài, ca sĩ và nhạc sĩ (`LibrarySearch.Entry`). Khi thư viện thay đổi, chỉ mục được dựng lại ở luồng nền và dùng lại phần không đổi.
+  - Gợi ý và kết quả trong lúc tìm hiện "Đang tìm…" thay vì "Không có bài nào".
+  - Test: 10 lượt tìm trên 50.000 bài mất ~0,3 giây trên JVM.
+- **C. Mở app nhanh hơn:**
+  - File hàng đợi được đọc ở luồng nền nên giao diện hiện ngay.
+  - Trong lúc đọc, các nút thao tác hàng đợi báo "Đang đọc hàng đợi…", để không ghi đè hàng đợi cũ.
+  - Mọi lần ghi file hàng đợi chạy trên một luồng ghi riêng, tuần tự, không còn ghi trên luồng giao diện.
+  - Nút "Bỏ mục xong" có sẵn giúp hàng đợi gọn hơn. Bài đã tải vẫn còn trong thư viện và vẫn được nhận ra để không tải trùng.
+- **Số phiên bản** hiện ở đầu tab Kiểm tra URL và tab Tải nhiều, và ở dòng đếm bài của tab Đã lưu, dạng "Phiên bản 0.10.0 (bản dựng 18)". App đọc số này từ chính gói APK đang cài.
+
 ## v0.9.1: sửa lỗi app đơ ("isn't responding") khi thư viện rất lớn
 
 **Hiện tượng:** thư viện ~15.000 bài, đang tải nền. Mở tab "Đã lưu" rồi gõ tìm kiếm thì app đơ và Android báo "Chord Offline isn't responding".

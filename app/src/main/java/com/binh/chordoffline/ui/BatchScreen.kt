@@ -59,6 +59,9 @@ fun BatchScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         if (q.total > 0) stickyHeader(key = "mini-progress") { MiniProgress(vm, b, check.confirmed) }
         item {
             Text("Tải nhiều bài", style = MaterialTheme.typography.titleLarge)
+            Text(com.binh.chordoffline.AppVersion.label(context), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary)
+            if (b.queueLoading) Text("Đang đọc hàng đợi…", style = MaterialTheme.typography.bodySmall)
             Text("Tải song song ${vm.workers.collectAsState().value} luồng, tổng tối đa ~${DownloadConfig.MAX_REQUESTS_PER_SECOND.toInt()} request/giây. " +
                 "Website báo bận (429/502/503/504) thì tự giảm luồng và thử lại chậm dần; gặp chặn (403, trang xác minh) thì dừng hẳn — " +
                 "app không vượt CAPTCHA, đăng nhập hay biện pháp bảo vệ của website.",

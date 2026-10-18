@@ -38,7 +38,21 @@ object CrashLog {
     fun stackTrace(e: Throwable): String = StringWriter().also { e.printStackTrace(PrintWriter(it)) }.toString()
 }
 
-object BuildConfigInfo { const val VERSION = "0.9.1" }
+object BuildConfigInfo { const val VERSION = "0.10.0" }
+
+/** Số phiên bản đọc từ chính gói APK đang cài (luôn đúng với bản đang chạy). */
+object AppVersion {
+    fun name(ctx: Context): String = runCatching {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+    }.getOrNull() ?: BuildConfigInfo.VERSION
+
+    fun code(ctx: Context): Long = runCatching {
+        androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(ctx.packageManager.getPackageInfo(ctx.packageName, 0))
+    }.getOrDefault(0L)
+
+    /** "Phiên bản 0.10.0 (bản dựng 18)". */
+    fun label(ctx: Context): String = "Phiên bản ${name(ctx)} (bản dựng ${code(ctx)})"
+}
 
 class ChordApp : Application() {
     override fun onCreate() {

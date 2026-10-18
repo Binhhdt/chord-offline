@@ -37,6 +37,8 @@ fun CheckScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) 
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Kiểm tra tải trực tiếp", style = MaterialTheme.typography.titleLarge)
+        Text("Chord Offline · " + com.binh.chordoffline.AppVersion.label(context), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary)
         var lastCrash by remember { mutableStateOf(CrashLog.read(context)) }
         lastCrash?.let { log ->
             ErrorCard("App đã bị lỗi ở lần chạy trước", log, onDismiss = { CrashLog.clear(context); lastCrash = null })

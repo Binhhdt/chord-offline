@@ -169,6 +169,9 @@ class SongStore(private val root: File) {
         return VersionStatus(state, p["savedAt"]?.toLongOrNull(), if (file.exists()) file.length() else null, p["lastError"])
     }
 
+    /** Mã các thư mục bài (một lần liệt kê thư mục, không mở file nào) — dùng để đối chiếu sổ mục lục. */
+    fun dirKeys(): List<String> = root.list()?.filter { isValidKey(it) } ?: emptyList()
+
     fun list(): List<SavedSong> = (root.listFiles()?.filter { it.isDirectory } ?: emptyList())
         .mapNotNull { d -> load(d.name) }.sortedByDescending { it.lastSavedMillis }
 

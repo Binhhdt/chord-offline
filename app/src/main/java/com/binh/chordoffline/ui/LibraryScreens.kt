@@ -63,10 +63,14 @@ import com.binh.chordoffline.core.SortMode
 import com.binh.chordoffline.core.Transpose
 import com.binh.chordoffline.core.TransposeState
 import com.binh.chordoffline.core.Version
+import com.binh.chordoffline.AppVersion
 
 @Composable
 fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version) -> Unit) {
     val songs by vm.library.collectAsState()
+    val entries by vm.searchIndex.collectAsState()
+    val loading by vm.libraryLoading.collectAsState()
+    val context = LocalContext.current
     LaunchedEffect(Unit) { vm.refreshLibraryIfNeeded(); vm.refreshStorage() }
     var confirmDelete by remember { mutableStateOf<Pair<String, Version?>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -74,14 +78,23 @@ fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version
     var showSuggest by rememberSaveable { mutableStateOf(false) }
     var field by rememberSaveable { mutableStateOf(SearchField.ALL) }
     var sort by rememberSaveable { mutableStateOf(SortMode.RECENT) }
-    // Lọc/sắp xếp/gợi ý chạy ở luồng nền (thư viện có thể hàng chục nghìn bài — chạy trên luồng giao diện sẽ làm app đơ).
-    val shown by produceState(initialValue = songs, songs, applied, field, sort) {
-        value = withContext(Dispatchers.Default) { LibrarySearch.filter(songs, applied, field, sort) }
+    // Lọc/sắp xếp/gợi ý chạy ở luồng nền trên chỉ mục bỏ dấu tính sẵn (vm.searchIndex).
+    // Không tìm & xếp "Mới lưu": danh sách thư viện đã đúng thứ tự -> hiện ngay, không cần tính.
+    val indexReady = entries.size == songs.size
+    val plain = applied.isBlank() && sort == SortMode.RECENT
+    val computed by produceState<List<SavedSong>?>(initialValue = null, entries, applied, field, sort, plain) {
+        if (plain) { value = null; return@produceState }
+        value = null                               // đang tính -> "Đang tìm…"
+        if (entries.isEmpty() && songs.isNotEmpty()) return@produceState   // chỉ mục chưa dựng xong; sẽ tính lại khi xong
+        value = withContext(Dispatchers.Default) { LibrarySearch.filterIndexed(entries, applied, field, sort) }
     }
-    val suggestions by produceState(initialValue = emptyList<SavedSong>(), songs, query) {
+    val shown: List<SavedSong>? = if (plain) songs else computed
+    val suggestions by produceState<List<SavedSong>?>(initialValue = emptyList(), entries, query, indexReady) {
         if (query.isBlank()) { value = emptyList(); return@produceState }
-        kotlinx.coroutines.delay(200)          // đợi ngừng gõ một chút rồi mới tìm
-        value = withContext(Dispatchers.Default) { LibrarySearch.suggest(songs, query) }
+        value = null                               // đang tìm
+        if (!indexReady) return@produceState
+        kotlinx.coroutines.delay(150)              // đợi ngừng gõ một chút rồi mới tìm
+        value = withContext(Dispatchers.Default) { LibrarySearch.suggestIndexed(entries, query) }
     }
     fun openSong(s: SavedSong) = onOpen(s.key, if (s.compact.state == SaveState.SAVED) Version.COMPACT else Version.PAGE)
     fun runSearch() { applied = query; showSuggest = false }
@@ -101,15 +114,29 @@ fun LibraryScreen(vm: AppViewModel, modifier: Modifier, onOpen: (String, Version
                 Text("Sắp xếp:", style = MaterialTheme.typography.bodySmall)
                 SortMode.entries.forEach { m -> FilterChip(selected = sort == m, onClick = { sort = m }, label = { Text(m.label) }) }
             }
-            Text((if (applied.isNotBlank()) "Kết quả cho \"$applied\": " else "") +
-                "${shown.size}/${songs.size} bài · mở offline, không cần mạng", style = MaterialTheme.typography.labelSmall)
+            Text(when {
+                loading && songs.isEmpty() -> "Đang tải thư viện…"
+                shown == null -> "Đang tìm…"
+                else -> (if (applied.isNotBlank()) "Kết quả cho \"$applied\": " else "") +
+                    "${shown.size}/${songs.size} bài · mở offline, không cần mạng"
+            } + " · " + AppVersion.label(context), style = MaterialTheme.typography.labelSmall)
         }
         item { StorageCard(vm) }
-        if (songs.isEmpty()) item {
+        if (loading && songs.isEmpty()) item {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Đang tải thư viện…")
+            }
+        } else if (songs.isEmpty()) item {
             Text("Chưa lưu bài nào. Dùng tab \"Kiểm tra URL\" hoặc \"Tải nhiều\" để tải và lưu, " +
                 "hoặc bấm \"Khôi phục\" nếu đã sao lưu trước đó.")
+        } else if (shown == null) item {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Đang tìm…")
+            }
         } else if (shown.isEmpty()) item { Text("Không có bài nào khớp \"$applied\".") }
-        items(shown, key = { it.key }) { song ->
+        items(shown ?: emptyList(), key = { it.key }) { song ->
             SectionCard(song.title) {
                 val info = listOfNotNull(song.singers?.let { "Ca sĩ: $it" }, song.composers?.let { "Nhạc sĩ: $it" },
                     song.tone?.let { "Tone: $it" })
@@ -176,9 +203,11 @@ private fun SearchBox(query: String, onChange: (String) -> Unit, onSearch: () ->
 
 /** Danh sách gợi ý khi đang gõ (tối đa 6 bài) + "Xem tất cả kết quả". Bấm vào bài để mở offline ngay. */
 @Composable
-private fun SuggestionCard(list: List<SavedSong>, query: String, onPick: (SavedSong) -> Unit, onAll: () -> Unit) {
+private fun SuggestionCard(found: List<SavedSong>?, query: String, onPick: (SavedSong) -> Unit, onAll: () -> Unit) {
+    val list = found ?: emptyList()
     ElevatedCard(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-        if (list.isEmpty()) Text("Không có bài đã lưu nào khớp \"$query\".", Modifier.padding(14.dp),
+        if (found == null) Text("Đang tìm…", Modifier.padding(14.dp), style = MaterialTheme.typography.bodySmall)
+        else if (list.isEmpty()) Text("Không có bài đã lưu nào khớp \"$query\".", Modifier.padding(14.dp),
             style = MaterialTheme.typography.bodySmall)
         list.forEach { s ->
             Row(Modifier.fillMaxWidth().clickable { onPick(s) }.padding(horizontal = 14.dp, vertical = 10.dp),
