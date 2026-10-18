@@ -45,6 +45,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import com.binh.chordoffline.core.ChordColors
 import com.binh.chordoffline.core.ChordStyle
 import com.binh.chordoffline.core.SavedSong
@@ -276,7 +277,14 @@ private val TransposeSaver = Saver<TransposeState, ArrayList<Int>>(
 @Composable
 fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     var text by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(key) { text = vm.load(key, Version.COMPACT) ?: "" }
+    LaunchedEffect(key) {
+        text = vm.load(key, Version.COMPACT) ?: ""
+        // Bài có bản "Nguyên trang" mà bản gọn chưa có các phiên bản -> bổ sung từ page.html (không cần mạng)
+        vm.upgradeVersionsFromPage(key)?.let { text = it }
+    }
+    val scope = rememberCoroutineScope()
+    var refetching by remember { mutableStateOf(false) }
+    var refetchMsg by remember { mutableStateOf<String?>(null) }
     var chordsAbove by remember { mutableStateOf(false) }
     var size by remember { mutableFloatStateOf(16f) }
     var tr by rememberSaveable(key, stateSaver = TransposeSaver) { mutableStateOf(TransposeState()) }
@@ -296,10 +304,20 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
     }) { pad ->
         if (doc == null) { Box(Modifier.padding(pad).fillMaxSize()) { CircularProgressIndicator(Modifier.align(Alignment.Center)) }; return@Scaffold }
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            // Nhiều phiên bản lời (tab "Phiên bản 1/2/…" như website); bài một phiên bản hiển thị y như trước.
+            val versions = remember(doc) { ChordText.splitVersions(doc) }
+            var sel by rememberSaveable(key) { mutableIntStateOf(0) }
+            val src = remember(doc, versions, sel) {
+                when {
+                    versions.size <= 1 -> doc.body
+                    sel >= versions.size -> versions.joinToString("\n\n") { (label, b) -> "— $label —\n$b" }
+                    else -> versions[sel].second
+                }
+            }
             // Chuyển tone chỉ đổi phần hiển thị; file .cho gốc không bị sửa.
             val origKey = doc.meta["key"]
-            val flats = remember(doc.body, origKey, tr.steps) { Transpose.preferFlats(origKey, tr.steps, doc.body) }
-            val body = remember(doc.body, tr.steps, flats) { Transpose.text(doc.body, tr.steps, flats) }
+            val flats = remember(src, origKey, tr.steps) { Transpose.preferFlats(origKey, tr.steps, src) }
+            val body = remember(src, tr.steps, flats) { Transpose.text(src, tr.steps, flats) }
             val keyLabel = when {
                 origKey == null -> if (tr.steps == 0) "gốc" else tr.label
                 tr.steps == 0 -> "$origKey (gốc)"
@@ -327,6 +345,12 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
                     Box(Modifier.size(14.dp).clip(CircleShape).background(chordColor))
                     Text(" Màu")
                 }
+            }
+            if (versions.size > 1) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                versions.forEachIndexed { i, (label, _) ->
+                    FilterChip(selected = sel == i, onClick = { sel = i }, label = { Text(label) })
+                }
+                FilterChip(selected = sel >= versions.size, onClick = { sel = versions.size }, label = { Text("Tất cả") })
             }
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
@@ -366,6 +390,19 @@ fun CompactViewer(vm: AppViewModel, key: String, onBack: () -> Unit) {
             Text("Nguồn: ${doc.meta["source_site"] ?: "Hợp Âm Việt"} — ${doc.meta["source"] ?: ""}",
                 style = MaterialTheme.typography.labelSmall)
             doc.meta["fetched_at"]?.let { Text("Tải lúc: $it · Bản lưu cá nhân, không chia sẻ lại.", style = MaterialTheme.typography.labelSmall) }
+            // Tải lại riêng bài này (cập nhật lời/hợp âm, thêm phiên bản còn thiếu) — 1 request, cần mạng
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = !refetching, onClick = {
+                    refetching = true; refetchMsg = "Đang tải lại…"
+                    scope.launch {
+                        refetchMsg = runCatching { vm.refetchSong(key) }.getOrElse { "Lỗi: ${it.message}" }
+                        text = vm.load(key, Version.COMPACT) ?: text
+                        refetching = false
+                    }
+                }) { Text("⟳ Tải lại bài này") }
+                if (refetching) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+            refetchMsg?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
         }
     }
 }

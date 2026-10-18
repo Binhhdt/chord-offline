@@ -75,6 +75,13 @@ class SongStore(private val root: File) {
 
     fun info(key: String): Map<String, String> = readPropsFile(File(dir(key), "info.properties"))
 
+    /** Cờ nhỏ lưu trong info.properties (vd. đã thử đọc thêm phiên bản từ bản nguyên trang). */
+    fun flag(key: String, name: String): Boolean = info(key)[name] == "1"
+    fun setFlag(key: String, name: String) {
+        val f = File(dir(key), "info.properties")
+        if (dir(key).isDirectory) runCatching { writePropsFile(f, readPropsFile(f) + (name to "1")) }
+    }
+
     // ---------- Ảnh thu nhỏ video YouTube (xem offline để nhận biết ca sĩ) ----------
     fun thumbFile(key: String, youtubeId: String): File = File(dir(key), "yt_" + youtubeId.filter { it.isLetterOrDigit() || it == '-' || it == '_' } + ".jpg")
     fun hasThumb(key: String, youtubeId: String) = thumbFile(key, youtubeId).let { it.exists() && it.length() > 0 }

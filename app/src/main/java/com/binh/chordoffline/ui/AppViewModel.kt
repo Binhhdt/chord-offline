@@ -474,6 +474,66 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun load(key: String, v: Version): String? = withContext(Dispatchers.IO) { store.read(key, v) }
 
+    // ---------- Nhiều phiên bản lời (v0.12) ----------
+
+    /**
+     * B1 — không cần mạng: bài đã lưu "Nguyên trang" mà bản gọn chưa có các phiên bản -> đọc lại page.html,
+     * nếu trang có từ 2 phiên bản thì ghi lại bản gọn (giữ thời điểm tải cũ). Mỗi bài chỉ thử một lần.
+     * Trả về nội dung bản gọn mới (null nếu không đổi).
+     */
+    suspend fun upgradeVersionsFromPage(key: String): String? = withContext(Dispatchers.IO) {
+        if (store.flag(key, "versions_checked")) return@withContext null
+        val cho = store.read(key, Version.COMPACT) ?: return@withContext null
+        val html = store.read(key, Version.PAGE)
+        if (ChordText.hasVersions(cho) || html == null) { store.setFlag(key, "versions_checked"); return@withContext null }
+        val parsed = runCatching { onBigStack("versions-parse") { SongParser.parse(html, store.info(key)["sourceUrl"]) } }.getOrNull()
+        store.setFlag(key, "versions_checked")
+        if (parsed == null || parsed.lyricVersions.size < 2 || !parsed.hasLyrics) return@withContext null
+        val old = ChordText.parseChordPro(cho).meta
+        val song = parsed.copy(sourceUrl = parsed.sourceUrl ?: old["source"])
+        val st = store.saveCompact(key, song, ChordText.toChordPro(song, old["fetched_at"] ?: iso(System.currentTimeMillis())))
+        if (st.error != null) return@withContext null
+        libraryChanged(key)
+        store.read(key, Version.COMPACT)
+    }
+
+    /**
+     * B2 — nút "Tải lại bài này": tải lại đúng một bài (1 request, qua giới hạn tốc độ chung & robots.txt),
+     * cập nhật bản gọn (kèm mọi phiên bản) và bản nguyên trang nếu bài đã có bản đó. Trả về thông báo.
+     */
+    suspend fun refetchSong(key: String): String {
+        val url = withContext(Dispatchers.IO) {
+            store.info(key)["sourceUrl"]?.ifBlank { null }
+                ?: store.read(key, Version.COMPACT)?.let { ChordText.parseChordPro(it).meta["source"] }
+        } ?: return "Không biết link gốc của bài này nên không tải lại được."
+        val r = robots ?: withContext(Dispatchers.IO) { loadRobots() }.also { robots = it }
+        val path = UrlPolicy.path(url)
+        if (!r.isAllowed(path)) return "robots.txt không cho phép $path"
+        acquireShared()
+        lastRequestAt = System.currentTimeMillis()
+        val f = withContext(Dispatchers.IO) { fetcher.fetch(url) }
+        lastResponseMs = f.elapsedMs; lastRequestAt = System.currentTimeMillis()
+        val html = f.body
+        if (BatchQueue.isBlockingResponse(f.status, html))
+            return "Website đang giới hạn/chặn (HTTP ${f.status ?: "?"}) — thử lại sau, app không vượt qua."
+        if (!f.ok || html == null) return "Không tải được: " + (f.error ?: "HTTP ${f.status}")
+        val parsed0 = onBigStack("refetch-parse") { SongParser.parse(html, f.finalUrl) }
+        val parsed = if (parsed0.sourceUrl == null) parsed0.copy(sourceUrl = f.finalUrl ?: url) else parsed0
+        if (!parsed.hasLyrics) return "Trang tải về không có lời/hợp âm — giữ nguyên bản đã lưu."
+        val msg = withContext(Dispatchers.IO) {
+            val hadPage = store.status(key, Version.PAGE).state == SaveState.SAVED
+            val st = store.saveCompact(key, parsed, ChordText.toChordPro(parsed, iso(f.fetchedAtMillis)))
+            if (hadPage) store.savePage(key, parsed.title, html,
+                FetchMeta(f.requestedUrl, f.finalUrl ?: f.requestedUrl, f.status ?: 0, f.contentType, f.fetchedAtMillis), song = parsed)
+            store.setFlag(key, "versions_checked")
+            if (st.error != null) "Lưu lỗi: ${st.error}"
+            else "Đã tải lại" + (if (parsed.lyricVersions.size > 1) " · ${parsed.lyricVersions.size} phiên bản" else "") + "."
+        }
+        enqueueAfterSaved(key, parsed)
+        libraryChanged(key); applyLibraryChanges()
+        return msg
+    }
+
     // =====================================================================
     // Tải nhiều URL — SONG SONG CÓ KIỂM SOÁT (v0.8):
     //  - N worker (mặc định 3) cùng lấy bài từ hàng đợi; mỗi bài chỉ được một worker nhận (claim trong vùng khoá).

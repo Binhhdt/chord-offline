@@ -129,6 +129,30 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.12.0: bài có nhiều phiên bản lời (Phiên bản 1 / 2 / …)
+
+Trên website, một số bài có các tab "Phiên bản 1", "Phiên bản 2", "Tất cả". Kiểm tra trên trang thật "Lời hứa vu vơ (Paroles, Paroles)": thanh tab là `#lyric-tab-bar`, mỗi nút `#lyric-tab-N` mang tên phiên bản, lời của từng phiên bản nằm trong `#lyric-version-N`. Trước bản này, app chỉ lấy `#lyric-version-0`.
+
+**A. Lấy đủ mọi phiên bản khi tải:**
+- `SongParser.extractVersions()` đọc mọi `#lyric-version-N` và lấy tên tab tương ứng.
+- File `.cho` vẫn bắt đầu bằng phiên bản 1 như cũ. Các phiên bản sau được nối vào cuối, mỗi phiên bản mở đầu bằng dòng `{version: Phiên bản 2}`, kèm `{version_label: …}` ở phần đầu file.
+- **Bài một phiên bản được lưu y hệt định dạng cũ.** Sao lưu, khôi phục, mục lục và tìm kiếm không thay đổi.
+
+**Màn xem bài:**
+- Bài có nhiều phiên bản hiện thêm các nút **Phiên bản 1 | Phiên bản 2 | Tất cả**.
+- Chuyển tone, hợp âm phía trên, cỡ chữ và màu hợp âm áp dụng cho phiên bản đang xem.
+
+**B1. Không cần mạng:**
+- Bài đã lưu "Nguyên trang" mà bản gọn chưa có các phiên bản thì khi mở bài, app đọc lại `page.html` và bổ sung, giữ nguyên thời điểm tải cũ.
+- Mỗi bài chỉ thử một lần (cờ `versions_checked`).
+
+**B2. Nút "⟳ Tải lại bài này"** ở cuối màn xem bài:
+- Tải lại riêng bài đó: 1 request, qua giới hạn tốc độ chung và robots.txt.
+- Cập nhật bản gọn kèm mọi phiên bản. Nếu bài đã có bản nguyên trang thì cập nhật cả bản đó.
+- Gặp 403/429/503 hoặc trang xác minh thì dừng và giữ nguyên bản đã lưu.
+
+App **không** tự tải lại cả thư viện để dò bài nhiều phiên bản: khoảng 47.000 request, quá nặng cho website.
+
 ## v0.11.1: sửa lỗi bài tải về thiếu ảnh YouTube
 
 **Hiện tượng:** bài mới tải hiện "▶ Video (chưa có ảnh)".

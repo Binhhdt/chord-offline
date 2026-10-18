@@ -20,10 +20,39 @@ object ChordText {
         d("source", song.sourceUrl)
         d("source_site", "Hợp Âm Việt (hopamviet.vn)")
         d("fetched_at", fetchedAtIso)
+        val versions = song.lyricVersions
+        if (versions.size > 1) d("version_label", versions[0].label)
         append("\n")
         append(song.lyrics.orEmpty())
         append("\n")
+        // Phiên bản 2, 3…: nối sau phiên bản 1, mỗi phiên bản mở đầu bằng dòng {version: tên}.
+        // Bài một phiên bản không có phần này -> file giống hệt định dạng cũ.
+        if (versions.size > 1) versions.drop(1).forEach { v ->
+            append("\n{version: ").append(v.label.replace("\n", " ")).append("}\n")
+            append(v.lyrics).append("\n")
+        }
     }
+
+    private val VERSION_LINE = Regex("""^\{version:\s*(.*?)\s*\}$""")
+
+    /**
+     * Tách thân bài thành các phiên bản (tên, lời). Bài một phiên bản -> một phần tử.
+     * Tên phiên bản đầu lấy từ {version_label} (mặc định "Phiên bản 1").
+     */
+    fun splitVersions(doc: ChordProDoc): List<Pair<String, String>> {
+        val out = mutableListOf<Pair<String, String>>()
+        var label = doc.meta["version_label"] ?: "Phiên bản 1"
+        val buf = mutableListOf<String>()
+        fun flush() { out += label to buf.joinToString("\n").trim('\n') ; buf.clear() }
+        for (line in doc.body.split('\n')) {
+            val m = VERSION_LINE.matchEntire(line.trim())
+            if (m != null) { flush(); label = m.groupValues[1].ifEmpty { "Phiên bản ${out.size + 1}" } } else buf += line
+        }
+        flush()
+        return out.filterIndexed { i, (_, b) -> i == 0 || b.isNotBlank() }
+    }
+
+    fun hasVersions(text: String): Boolean = text.contains("\n{version: ")
 
     data class ChordProDoc(val meta: Map<String, String>, val body: String)
 

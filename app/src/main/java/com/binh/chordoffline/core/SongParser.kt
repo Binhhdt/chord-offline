@@ -22,11 +22,19 @@ data class ParsedSong(
     val lyrics: String?,
     /** Ca sĩ + tone + video YouTube (nếu có trong HTML). Thêm ở v0.4.0, mặc định rỗng để tương thích. */
     val singers: List<SingerInfo> = emptyList(),
+    /**
+     * Các phiên bản lời (tab "Phiên bản 1/2/…" trên website), CHỈ khi bài có từ 2 phiên bản trở lên;
+     * phần tử đầu trùng với [lyrics]. Bài một phiên bản: rỗng (giữ nguyên định dạng lưu như trước). Thêm ở v0.12.
+     */
+    val lyricVersions: List<LyricVersion> = emptyList(),
 ) {
     val lyricLineCount: Int get() = lyrics?.lines()?.size ?: 0
     val inlineChordCount: Int get() = lyrics?.let { ChordText.CHORD.findAll(it).count() } ?: 0
     val hasLyrics: Boolean get() = !lyrics.isNullOrBlank()
 }
+
+/** Một phiên bản lời: tên tab trên website (vd. "Phiên bản 2") + lời có hợp âm inline. */
+data class LyricVersion(val label: String, val lyrics: String)
 
 object SongParser {
 
@@ -65,15 +73,39 @@ object SongParser {
             youtubeId = youtube,
             lyrics = extractLyrics(doc),
             singers = runCatching { SingerExtractor.extract(doc) }.getOrDefault(emptyList()),
+            lyricVersions = runCatching { extractVersions(doc) }.getOrDefault(emptyList()),
         )
+    }
+
+    private val VERSION_ID = Regex("""lyric-version-(\d+)""")
+
+    /**
+     * Mọi phiên bản lời: các khối #lyric-version-N (N = 0,1,…), tên lấy từ nút #lyric-tab-N ("Phiên bản 2").
+     * Trả về rỗng nếu bài chỉ có một phiên bản.
+     */
+    fun extractVersions(doc: Document): List<LyricVersion> {
+        val blocks = doc.select("[id^=lyric-version-]").mapNotNull { el ->
+            VERSION_ID.matchEntire(el.id())?.groupValues?.get(1)?.toIntOrNull()?.let { it to el }
+        }.distinctBy { it.first }.sortedBy { it.first }
+        if (blocks.size < 2) return emptyList()
+        val out = blocks.mapNotNull { (n, el) ->
+            val text = lyricsOf(el) ?: return@mapNotNull null
+            val label = doc.selectFirst("#lyric-tab-$n")?.text()?.trim()?.replace(Regex("""\s+"""), " ")
+                ?.takeIf { it.isNotEmpty() && it.length <= 40 } ?: "Phiên bản ${n + 1}"
+            LyricVersion(label.replace('{', '(').replace('}', ')'), text)
+        }
+        return if (out.size >= 2) out else emptyList()
     }
 
     /** Phần tử chứa lời: #lyric-version-0, dự phòng .lyric-version đầu tiên trong #lyricBox. */
     fun lyricElement(doc: Document): Element? =
         doc.selectFirst("#lyric-version-0") ?: doc.selectFirst("#lyricBox .lyric-version")
 
-    fun extractLyrics(doc: Document): String? {
-        val el = lyricElement(doc)?.clone() ?: return null
+    fun extractLyrics(doc: Document): String? = lyricElement(doc)?.let { lyricsOf(it) }
+
+    /** Lời có hợp âm inline của một khối lời. */
+    fun lyricsOf(element: Element): String? {
+        val el = element.clone()
         // <br> -> xuống dòng (trang hiện dùng \n thật, nhưng phòng khi đổi sang <br>)
         el.select("br").forEach { it.replaceWith(TextNode("\n")) }
         // <span class="chord">[Am]</span> -> [Am] (thêm ngoặc nếu trang bỏ ngoặc)

@@ -12,8 +12,8 @@ android {
         applicationId = "com.binh.chordoffline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.11.1"
+        versionCode = 22
+        versionName = "0.12.0"
     }
 
     // Chữ ký CỐ ĐỊNH cho mọi bản build (kể cả trên GitHub Actions): Android chỉ cho cài đè bản mới
