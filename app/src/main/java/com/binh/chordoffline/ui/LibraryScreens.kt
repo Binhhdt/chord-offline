@@ -428,7 +428,8 @@ private fun SingerSection(vm: AppViewModel, key: String, singers: List<SingerInf
     singers.forEach { s ->
         val thumb by produceState<ImageBitmap?>(null, key, s.youtubeId) {
             value = s.youtubeId?.let { id ->
-                withContext(Dispatchers.IO) { vm.thumbFile(key, id)?.let { f -> BitmapFactory.decodeFile(f.path)?.asImageBitmap() } }
+                // chưa có ảnh (bài tải trước đây bị thiếu) -> tự tải bù khi có mạng rồi hiện luôn
+                withContext(Dispatchers.IO) { (vm.thumbFile(key, id) ?: vm.ensureThumb(key, id))?.let { f -> BitmapFactory.decodeFile(f.path)?.asImageBitmap() } }
             }
         }
         fun openYoutube() {
@@ -445,7 +446,7 @@ private fun SingerSection(vm: AppViewModel, key: String, singers: List<SingerInf
                 }
             } else if (s.youtubeId != null) {
                 Box(Modifier.width(128.dp).height(72.dp).clickable { openYoutube() }, contentAlignment = Alignment.Center) {
-                    Text("▶ Video\n(chưa có ảnh)", style = MaterialTheme.typography.labelSmall)
+                    Text("▶ Video\n(chưa có ảnh — cần mạng để tải)", style = MaterialTheme.typography.labelSmall)
                 }
             }
             Column(Modifier.weight(1f)) {

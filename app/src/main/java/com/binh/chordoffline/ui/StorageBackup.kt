@@ -3,6 +3,7 @@ package com.binh.chordoffline.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.binh.chordoffline.core.SongStore
 
@@ -34,24 +35,48 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         invalidateCache()
     }
 
-    // ---- Bộ nhớ đệm thư mục: DocumentFile.findFile() liệt kê LẠI toàn bộ thư mục mỗi lần gọi
-    // (gần 2000 thư mục bài -> rất chậm). Liệt kê một lần, giữ bảng tên -> thư mục để tra nhanh.
+    // ---- Bộ nhớ đệm thư mục. Liệt kê bằng MỘT truy vấn DocumentsContract (tên, loại, kích thước cùng lúc).
+    // DocumentFile.listFiles() + .name/.isDirectory hỏi Android riêng từng mục -> với ~47.000 thư mục bài mất
+    // hàng chục phút; trong lúc đó hàng việc nền (trước v0.11.1 gồm cả ảnh YouTube) bị kẹt.
+    private data class Child(val name: String, val uri: Uri, val isDir: Boolean, val size: Long)
+
     @Volatile private var cachedApp: DocumentFile? = null
     @Volatile private var cachedTree: Uri? = null
-    @Volatile private var childDirs: MutableMap<String, DocumentFile>? = null
-    @Volatile private var childFiles: MutableMap<String, DocumentFile>? = null
+    @Volatile private var childDirs: MutableMap<String, Uri>? = null
+    @Volatile private var childFiles: MutableMap<String, Uri>? = null
 
     /** Không khoá: có thể gọi từ luồng giao diện (chọn thư mục) trong lúc sao lưu nền đang chạy. */
     fun invalidateCache() { cachedApp = null; cachedTree = null; childDirs = null; childFiles = null }
 
+    /** Các mục con của một thư mục (uri dạng document-trong-tree) — một lần truy vấn. */
+    private fun listChildren(dirUri: Uri): List<Child> {
+        val tree = treeUri ?: return emptyList()
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(dirUri))
+        val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE)
+        val out = ArrayList<Child>()
+        context.contentResolver.query(childrenUri, cols, null, null, null)?.use { c ->
+            while (c.moveToNext()) {
+                val id = c.getString(0) ?: continue
+                val name = c.getString(1) ?: continue
+                val isDir = c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR
+                out += Child(name, DocumentsContract.buildDocumentUriUsingTree(tree, id), isDir, if (c.isNull(3)) -1L else c.getLong(3))
+            }
+        }
+        return out
+    }
+
+    private fun createIn(dirUri: Uri, mime: String, name: String): Uri =
+        DocumentsContract.createDocument(context.contentResolver, dirUri, mime, name) ?: error("Không tạo được $name")
+
     private fun cachedAppDir(): DocumentFile {
         val t = treeUri
-        cachedApp?.takeIf { cachedTree == t }?.let { return it }
+        cachedApp?.takeIf { cachedTree == t && childDirs != null }?.let { return it }
         val app = appDir(create = true) ?: error("Chưa chọn thư mục lưu hoặc mất quyền truy cập")
+        val all = listChildren(app.uri)
+        childDirs = all.filter { it.isDir }.associateTo(HashMap()) { it.name to it.uri }
+        childFiles = all.filter { !it.isDir }.associateTo(HashMap()) { it.name to it.uri }
         cachedApp = app; cachedTree = t
-        val all = app.listFiles().filter { it.name != null }
-        childDirs = all.filter { it.isDirectory }.associateBy { it.name!! }.toMutableMap()
-        childFiles = all.filter { !it.isDirectory }.associateBy { it.name!! }.toMutableMap()
         return app
     }
 
@@ -83,8 +108,8 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
     private fun writeExtraCached(name: String, text: String) {
         val app = cachedAppDir()
         val files = childFiles!!
-        val f = files[name] ?: (app.createFile("application/octet-stream", name) ?: return).also { files[name] = it }
-        context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(text.toByteArray()) }
+        val f = files[name] ?: createIn(app.uri, "application/octet-stream", name).also { files[name] = it }
+        context.contentResolver.openOutputStream(f, "wt")!!.use { it.write(text.toByteArray()) }
     }
 
     fun readExtra(name: String): String? = runCatching {
@@ -112,14 +137,15 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
     private fun backupKeyCached(key: String): Int {
         val app = cachedAppDir()
         val dirs = childDirs!!
-        val dir = dirs[key] ?: (app.createDirectory(key) ?: error("Không tạo được thư mục $key")).also { dirs[key] = it }
-        val existingFiles = dir.listFiles().filter { it.name != null }.associateBy { it.name!! }
+        val dirNew = dirs[key] == null
+        val dir = dirs[key] ?: createIn(app.uri, DocumentsContract.Document.MIME_TYPE_DIR, key).also { dirs[key] = it }
+        val existingFiles = if (dirNew) emptyMap() else listChildren(dir).filter { !it.isDir }.associateBy { it.name }
         var written = 0
         for (f in store.filesOf(key)) {
             val existing = existingFiles[f.name]
-            if (existing != null && existing.length() == f.length()) continue
-            val target = existing ?: dir.createFile(mime(f.name), f.name) ?: error("Không tạo được ${f.name}")
-            context.contentResolver.openOutputStream(target.uri, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
+            if (existing != null && existing.size == f.length()) continue
+            val target = existing?.uri ?: createIn(dir, mime(f.name), f.name)
+            context.contentResolver.openOutputStream(target, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
             written++
         }
         return written
@@ -140,13 +166,13 @@ class StorageBackup(private val context: Context, private val store: SongStore) 
         val app = appDir(create = false) ?: return Result(0, 0, listOf(
             "Không thấy bài nào: hãy chọn thư mục ChordOffline hoặc thư mục chứa nó (ví dụ Download/Hopamviet)"))
         var songs = 0; var files = 0; val errors = mutableListOf<String>()
-        for (dir in app.listFiles().filter { it.isDirectory }) {
-            val key = dir.name ?: continue
+        for (dir in listChildren(app.uri).filter { it.isDir }) {      // một truy vấn cho cả thư mục
+            val key = dir.name
             if (!SongStore.isValidKey(key)) continue
             var n = 0
-            for (f in dir.listFiles().filter { it.isFile }) {
-                val name = f.name ?: continue
-                if (!SongStore.isBackupName(name) || f.length() > 16L * 1024 * 1024) continue
+            for (f in listChildren(dir.uri).filter { !it.isDir }) {
+                val name = f.name
+                if (!SongStore.isBackupName(name) || f.size > 16L * 1024 * 1024) continue
                 runCatching {
                     val bytes = context.contentResolver.openInputStream(f.uri)!!.use { it.readBytes() }
                     if (store.importFile(key, name, bytes)) n++

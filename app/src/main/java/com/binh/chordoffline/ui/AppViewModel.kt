@@ -812,27 +812,71 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Hàng việc phụ sau khi lưu (1 coroutine, tuần tự, không chặn đường tải) ----------
-    private val postChannel = Channel<Pair<String, ParsedSong?>>(Channel.UNLIMITED)
-    private val postPending = AtomicInteger(0)
+    // Hai hàng nền RIÊNG (v0.11.1): ảnh YouTube và tự sao lưu. Trước đây chung một hàng -> lần sao lưu đầu
+    // (liệt kê thư mục sao lưu hàng chục nghìn bài) làm ảnh của các bài vừa tải phải chờ rất lâu / mất khi tắt app.
+    private val thumbChannel = Channel<Pair<String, List<String>>>(Channel.UNLIMITED)
+    private val backupChannel = Channel<String>(Channel.UNLIMITED)
+    private val thumbPending = AtomicInteger(0)
+    private val backupPending = AtomicInteger(0)
     @Volatile private var postStarted = false
 
-    private fun enqueueAfterSaved(key: String, song: ParsedSong?) {
-        val hasThumbs = song?.singers?.any { it.youtubeId != null } == true
-        if (!hasThumbs && !backup.autoBackup) return
-        if (!postStarted) synchronized(this) {
-            if (!postStarted) {
-                postStarted = true
+    private fun updatePostPending() = _batch.update { it.copy(postPending = (thumbPending.get() + backupPending.get()).coerceAtLeast(0)) }
+
+    private fun startPostWorkers() {
+        if (postStarted) return
+        synchronized(this) {
+            if (postStarted) return
+            postStarted = true
+            repeat(2) {     // ảnh từ img.youtube.com (không phải hopamviet): 2 luồng
                 viewModelScope.launch(Dispatchers.IO) {
-                    for ((k, s) in postChannel) {
-                        runCatching { afterSaved(k, s) }
-                        _batch.update { it.copy(postPending = postPending.decrementAndGet().coerceAtLeast(0)) }
+                    for ((k, ids) in thumbChannel) {
+                        runCatching { ids.forEach { id -> downloadThumb(k, id) } }
+                        thumbPending.decrementAndGet(); updatePostPending()
                     }
                 }
             }
+            viewModelScope.launch(Dispatchers.IO) {
+                for (k in backupChannel) {
+                    if (backup.autoBackup && backup.hasValidFolder())
+                        runCatching { backup.backupKey(k) }.onFailure { e -> _storage.update { it.copy(message = "Tự sao lưu lỗi ($k): ${e.message}") } }
+                    backupPending.decrementAndGet(); updatePostPending()
+                }
+            }
         }
-        _batch.update { it.copy(postPending = postPending.incrementAndGet()) }
-        postChannel.trySend(key to song)
     }
+
+    private fun enqueueAfterSaved(key: String, song: ParsedSong?) {
+        val ids = song?.singers?.mapNotNull { it.youtubeId }?.distinct().orEmpty()
+        val doBackup = backup.autoBackup
+        if (ids.isEmpty() && !doBackup) return
+        startPostWorkers()
+        if (ids.isNotEmpty()) { thumbPending.incrementAndGet(); thumbChannel.trySend(key to ids) }
+        if (doBackup) { backupPending.incrementAndGet(); backupChannel.trySend(key) }
+        updatePostPending()
+    }
+
+    private val thumbLock = Any()
+    private val thumbInFlight = HashSet<String>()
+
+    /** Tải ảnh thu nhỏ một video nếu chưa có. Trả về file ảnh (null nếu không tải được, ví dụ không có mạng). */
+    private fun downloadThumb(key: String, id: String): File? {
+        val f = store.thumbFile(key, id)
+        if (f.exists() && f.length() > 0) return f
+        val tag = "$key/$id"
+        synchronized(thumbLock) { if (!thumbInFlight.add(tag)) return null }
+        try {
+            val url = SingerInfo("", null, null, id).thumbnailUrl ?: return null
+            val bytes = fetcher.fetchImage(url) ?: return null
+            runCatching { store.saveThumb(key, id, bytes) }
+            if (backup.autoBackup) { startPostWorkers(); backupPending.incrementAndGet(); backupChannel.trySend(key); updatePostPending() }
+            return store.thumbFile(key, id).takeIf { it.exists() && it.length() > 0 }
+        } finally {
+            synchronized(thumbLock) { thumbInFlight.remove(tag) }
+        }
+    }
+
+    /** Màn xem bài: ảnh chưa có (bài tải trước đây bị thiếu ảnh) -> tự tải bù khi có mạng. */
+    suspend fun ensureThumb(key: String, youtubeId: String): File? = withContext(Dispatchers.IO) { downloadThumb(key, youtubeId) }
 
     // =====================================================================
     // Lấy danh sách bài từ trang danh mục (thể loại/nhạc sĩ/ca sĩ/điệu/hot/mới).
@@ -1319,18 +1363,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Sau khi lưu: tải ảnh thu nhỏ YouTube (img.youtube.com, để xem offline nhận biết ca sĩ)
     // và tự sao lưu sang thư mục người dùng chọn (nếu bật). Lỗi ở đây không ảnh hưởng bản đã lưu.
     // =====================================================================
+    /** Lưu một bài ở tab Kiểm tra URL: tải ảnh ngay; sao lưu đưa vào hàng nền (không bắt người dùng chờ). */
     private fun afterSaved(key: String, song: ParsedSong?) {
-        song?.singers?.mapNotNull { it.youtubeId }?.distinct()?.forEach { id ->
-            if (!store.hasThumb(key, id)) {
-                val url = SingerInfo("", null, null, id).thumbnailUrl ?: return@forEach
-                fetcher.fetchImage(url)?.let { bytes -> runCatching { store.saveThumb(key, id, bytes) } }
-            }
-        }
-        if (backup.autoBackup && backup.hasValidFolder()) {
-            runCatching { backup.backupKey(key) }.onFailure { e ->
-                _storage.update { it.copy(message = "Tự sao lưu lỗi ($key): ${e.message}") }
-            }
-        }
+        song?.singers?.mapNotNull { it.youtubeId }?.distinct()?.forEach { id -> downloadThumb(key, id) }
+        if (backup.autoBackup) { startPostWorkers(); backupPending.incrementAndGet(); backupChannel.trySend(key); updatePostPending() }
     }
 
     fun refreshStorage() {

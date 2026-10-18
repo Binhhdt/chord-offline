@@ -129,6 +129,20 @@ Dữ liệu nằm trong `/data/data/com.binh.chordoffline/files/songs/<ID>/`.
 7. Trạng thái hàng đợi được lưu vào `files/batch_queue.tsv` sau mỗi thay đổi. Nếu app bị tắt giữa chừng, mục "Đang tải" sẽ quay về "Chờ"; mở lại app rồi bấm **Tiếp tục**.
 8. Hàng đợi chỉ chạy khi app đang mở, vì app không có dịch vụ chạy nền. Nếu Android tắt app, trạng thái vẫn được giữ như ở bước 7.
 
+## v0.11.1: sửa lỗi bài tải về thiếu ảnh YouTube
+
+**Hiện tượng:** bài mới tải hiện "▶ Video (chưa có ảnh)".
+
+**Nguyên nhân:**
+- Ảnh YouTube và tự sao lưu dùng **chung một hàng việc nền**, xử lý lần lượt từng bài.
+- Lần sao lưu đầu phải liệt kê thư mục sao lưu (~47.000 thư mục bài) bằng `DocumentFile.listFiles()` rồi đọc `.name`/`.isDirectory` của từng mục. Mỗi lần đọc là một lần hỏi Android, nên mất rất lâu.
+- Trong lúc đó, ảnh của các bài vừa tải phải chờ. Tắt app thì những ảnh này mất luôn và không được tải bù.
+
+**Cách sửa:**
+- Tách thành **hai hàng riêng**: ảnh YouTube (2 luồng, tải từ img.youtube.com) và sao lưu. Sao lưu chậm không còn chặn ảnh.
+- Liệt kê thư mục sao lưu bằng **một truy vấn `DocumentsContract`**, lấy cả tên, loại và kích thước cùng lúc. Áp dụng cho cả sao lưu và khôi phục.
+- **Mở một bài mà chưa có ảnh** thì app tự tải bù khi có mạng rồi hiện ngay. Cách này sửa luôn các bài đã bị thiếu ảnh trước đây.
+
 ## v0.11.0: kiểm tra bài mới trên Hợp Âm Việt (A + B) + sửa tab Đã lưu
 
 **Sửa lỗi:** bấm tab "Đã lưu" ở thanh dưới vẫn gọi lệnh đọc lại **toàn bộ** thư viện (~15 giây với 47.565 bài). Lệnh này chạy trùng lúc app nạp mục lục nên màn hình báo "0/0 bài". Giờ bấm tab chỉ ghép các bài vừa thay đổi. Nếu đang có lượt đọc toàn bộ (ví dụ vừa Khôi phục), màn hình vẫn hiện "Đang tải thư viện…" tới khi xong.
